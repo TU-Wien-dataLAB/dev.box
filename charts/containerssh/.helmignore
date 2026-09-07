@@ -1,0 +1,13 @@
+# Patterns to ignore when building the chart.
+.helmignore
+.git
+.gitignore
+*.tmproj
+.vscode/
+.idea/
+*.swp
+*.bak
+*.tmp
+*.orig
+*~
+.DS_Store

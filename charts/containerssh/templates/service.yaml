@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "containerssh.fullname" . }}
+  labels:
+    {{- include "containerssh.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "containerssh.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: ssh
+      port: {{ int .Values.service.port }}
+      targetPort: {{ int .Values.ssh.port }}
+      protocol: TCP
+      {{- with .Values.service.nodePort }}
+      nodePort: {{ int . }}
+      {{- end }}
+  {{- with .Values.service.loadBalancerIP }}
+  loadBalancerIP: {{ . }}
+  {{- end }}

@@ -1,0 +1,90 @@
+{{- if not .Values.existingConfigMap }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "containerssh.fullname" . }}
+  labels:
+    {{- include "containerssh.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    ssh:
+      listen: {{ printf "0.0.0.0:%d" (int .Values.ssh.port) | quote }}
+    {{- if include "containerssh.hostKeySecret" . }}
+      hostkeys:
+        - /etc/containerssh/host.key
+    {{- end }}
+    backend: kubernetes
+    kubernetes:
+      connection:
+        host: {{ .Values.kubernetes.connection.host | quote }}
+        path: {{ default "/api" .Values.kubernetes.connection.path | quote }}
+    {{- with .Values.kubernetes.connection.serverName }}
+        serverName: {{ . | quote }}
+    {{- end }}
+    {{- with .Values.kubernetes.connection.username }}
+        username: {{ . | quote }}
+    {{- end }}
+    {{- with .Values.kubernetes.connection.password }}
+        password: {{ . | quote }}
+    {{- end }}
+    {{- with .Values.kubernetes.connection.bearerToken }}
+        bearerToken: {{ . | quote }}
+    {{- end }}
+    {{- with .Values.kubernetes.connection.bearerTokenFile }}
+        bearerTokenFile: {{ . | quote }}
+    {{- end }}
+    {{- with .Values.kubernetes.connection.cacert }}
+        cacert: |
+{{ . | nindent 10 }}
+    {{- end }}
+    {{- with .Values.kubernetes.connection.cacertFile }}
+        cacertFile: {{ . | quote }}
+    {{- end }}
+    {{- with .Values.kubernetes.connection.qps }}
+        qps: {{ . }}
+    {{- end }}
+    {{- with .Values.kubernetes.connection.burst }}
+        burst: {{ . }}
+    {{- end }}
+      pod:
+        mode: {{ .Values.kubernetes.mode | quote }}
+        metadata:
+          namespace: {{ .Values.kubernetes.sessionNamespace | quote }}
+          generateName: containerssh-
+        {{- with .Values.kubernetes.pod.metadata }}
+{{ toYaml . | indent 10 }}
+        {{- end }}
+        {{- with .Values.kubernetes.pod.spec }}
+        spec:
+{{ toYaml . | indent 10 }}
+        {{- end }}
+    log:
+      level: {{ .Values.log.level }}
+    {{- $configServerURL := .Values.configserver.url }}
+    {{- if and .Values.configServer.enabled (not .Values.configserver.url) }}
+    {{- $configServerURL = printf "http://%s-config-server.%s.svc.cluster.local" (include "containerssh.fullname" .) .Release.Namespace }}
+    {{- end }}
+    {{- if $configServerURL }}
+    configserver:
+      url: {{ $configServerURL | quote }}
+      timeout: {{ .Values.configserver.timeout | quote }}
+      transmitSensitiveMetadata: {{ .Values.configserver.transmitSensitiveMetadata }}
+      {{- with .Values.configserver.allowRedirects }}
+      allowRedirects: {{ . }}
+      {{- end }}
+      {{- with .Values.configserver.tlsVersion }}
+      tlsVersion: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.configserver.cacert }}
+      cacert: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.configserver.cert }}
+      cert: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.configserver.key }}
+      key: {{ . | quote }}
+      {{- end }}
+    {{- end }}
+    auth:
+{{ toYaml .Values.auth | indent 6 }}
+{{- end }}

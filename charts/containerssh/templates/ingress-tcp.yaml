@@ -1,0 +1,35 @@
+{{- /*
+Raw-TCP ingress (Traefik IngressRouteTCP) for the SSH listener.
+
+SSH is a raw TCP protocol, not HTTP(S). An HTTP Ingress cannot carry it and
+cert-manager / ACME only issues X.509 certificates for HTTPS (the SSH server's
+identity is its own host key, which is auto-generated — see ssh.hostKey). So the
+only "ingress" that fits ContainerSSH is a plain-TCP route: Traefik
+IngressRouteTCP (traefik.io/v1alpha1).
+
+Rendered only when ingress.enabled=true. Requires:
+  1. Traefik's IngressRouteTCP CRD (present in a standard Traefik install), and
+  2. a static TCP entrypoint exposed on the traefik LoadBalancer Service —
+     see values.yaml / NOTES.txt for the one-time cluster setup.
+*/}}
+{{- if .Values.ingress.enabled }}
+{{- if ne .Values.ingress.controller "traefik" }}
+{{- fail "ingress: only controller=traefik (IngressRouteTCP) is supported" }}
+{{- end }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRouteTCP
+metadata:
+  name: {{ include "containerssh.fullname" . }}-ssh
+  labels:
+    {{- include "containerssh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tcp-ingress
+spec:
+  entryPoints:
+    - {{ .Values.ingress.tcp.entryPoint }}
+  routes:
+    - match: {{ default "HostSNI(`*`)" .Values.ingress.tcp.match | quote }}
+      services:
+        - name: {{ include "containerssh.fullname" . }}
+          port: {{ int .Values.ingress.tcp.servicePort }}
+{{- end }}

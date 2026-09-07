@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "containerssh.fullname" . }}-test-connection"
+  labels:
+    {{- include "containerssh.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+spec:
+  restartPolicy: Never
+  containers:
+    - name: tcp-check
+      image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+      imagePullPolicy: IfNotPresent
+      # Override the containerssh entrypoint so we can run a lightweight TCP probe
+      # using the busybox available in the image.
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          host={{ include "containerssh.fullname" . }}; port={{ int .Values.ssh.port }};
+          for i in $(seq 1 20); do
+            if timeout 2 sh -c "echo | nc -w 1 $host $port" >/dev/null 2>&1; then
+              echo "SSH port $host:$port is reachable";
+              exit 0;
+            fi;
+            sleep 2;
+          done;
+          echo "SSH port $host:$port did not become reachable";
+          exit 1;

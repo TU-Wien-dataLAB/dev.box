@@ -1,0 +1,54 @@
+{{- if .Values.ssh.hostKey.existingSecret }}
+SSH host key: mounted from existing secret {{ .Values.ssh.hostKey.existingSecret }}
+{{- else if .Values.ssh.hostKey.privateKey }}
+SSH host key: generated into secret {{ include "containerssh.fullname" . }}-hostkey
+{{- else }}
+WARNING: no SSH host key configured. ContainerSSH will generate an EPHEMERAL key at
+startup; the host key fingerprint changes on every pod restart. To get a stable key:
+    openssl genrsa | kubectl create secret generic containerssh-hostkey \
+      --from-file=host.key=/dev/stdin -n {{ .Release.Namespace }}
+  then re-install with:
+    --set ssh.hostKey.existingSecret=containerssh-hostkey
+{{- end }}
+
+{{- if .Values.ingress.enabled }}
+SSH is exposed through the Traefik ingress route "{{ include "containerssh.fullname" . }}-ssh"
+(entryPoint "{{ .Values.ingress.tcp.entryPoint }}", raw TCP, no TLS setup needed — SSH
+secures the transport itself).
+
+  One-time cluster prerequisite (if not done already) — the traefik LoadBalancer must
+  listen on that TCP port and forward it to the entrypoint:
+    kubectl -n traefik patch svc traefik --type=json -p \
+      '[{"op":"add","path":"/spec/ports/-","value":{"name":"ssh","port":2222,"targetPort":2222,"protocol":"TCP"}}]'
+    kubectl -n traefik patch deploy traefik --type=json -p \
+      '[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--entryPoints.ssh.address=:2222/tcp"}]'
+  Then, from anywhere pointing at the traefik public IP / host — the SSH login name
+  selects the pod template, e.g. "ubuntu" drops you into the ubuntu pod:
+    ssh -p 2222 ubuntu@<traefik-host>
+
+{{- end }}
+1. Get the SSH service:
+    kubectl --namespace {{ .Release.Namespace }} get svc {{ include "containerssh.fullname" . }}
+
+   Port-forward for local access:
+    kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "containerssh.fullname" . }} {{ .Values.service.port }}:{{ .Values.ssh.port }}
+
+2. Connect (requires a running authentication server, see auth.password.webhook.url):
+    ssh -p {{ .Values.service.port }} <user>@localhost
+
+{{- if .Values.configServer.enabled }}
+2b. Bundled config server deployed at
+    {{ include "containerssh.fullname" . }}-config-server.{{ .Release.Namespace }}:8080 and
+    auto-wired to configserver.url. `ssh <user>@...` serves the pod template named
+    after `<user>` in kubernetes.podTemplates (a template named "default" is the
+    catch-all for other users).
+    If the pod is not Ready, the image may be missing — build/push it (see config-server README).
+{{- end }}
+
+3. Per-session pods are launched in namespace {{ .Values.kubernetes.sessionNamespace }}.
+   ContainerSSH needs a Role/RoleBinding there to create pods
+   (this chart creates it when rbac.enabled=true). A NetworkPolicy there allows
+   the session pods egress to the public internet only (no ingress); tune via values.networkPolicy.
+
+4. Sanity check the deployment:
+    kubectl --namespace {{ .Release.Namespace }} logs deployment/{{ include "containerssh.fullname" . }}

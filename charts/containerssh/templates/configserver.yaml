@@ -1,0 +1,115 @@
+{{- /*
+Bundled pod-template configuration server (dev.box/config-server).
+Rendered only when configServer.enabled=true: a ConfigMap with the pod templates
+from values.kubernetes.podTemplates, plus a Deployment and a Service that serve
+the template matching the SSH username, then default.yaml. configserver.url is auto-wired to
+this Service in configmap.yaml.
+*/}}
+{{- if .Values.configServer.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "containerssh.fullname" . }}-templates
+  labels:
+    {{- include "containerssh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: config-server
+data:
+  {{- range $i, $tpl := .Values.kubernetes.podTemplates }}
+  {{ default (printf "template-%d" $i) $tpl.name }}.yaml: |
+    kubernetes:
+      pod:
+    {{- with $tpl.mode }}
+        mode: {{ . | quote }}
+    {{- end }}
+    {{- with $tpl.metadata }}
+        metadata:
+{{ toYaml . | indent 10 }}
+    {{- end }}
+    {{- with $tpl.spec }}
+        spec:
+{{ toYaml . | indent 10 }}
+    {{- end }}
+  {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "containerssh.fullname" . }}-config-server
+  labels:
+    {{- include "containerssh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: config-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "containerssh.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: config-server
+  template:
+    metadata:
+      labels:
+        {{- include "containerssh.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: config-server
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: config-server
+          image: "{{ .Values.configServer.image.repository }}:{{ .Values.configServer.image.tag }}"
+          imagePullPolicy: {{ .Values.configServer.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: CONTAINERSSH_CONFIG_DIR
+              value: /config
+            - name: CONTAINERSSH_LISTEN
+              value: 0.0.0.0:8080
+            - name: CONTAINERSSH_LOG_LEVEL
+              value: {{ .Values.configServer.logLevel | quote }}
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.configServer.resources | nindent 12 }}
+          volumeMounts:
+            - name: templates
+              mountPath: /config
+              readOnly: true
+      volumes:
+        - name: templates
+          configMap:
+            name: {{ include "containerssh.fullname" . }}-templates
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "containerssh.fullname" . }}-config-server
+  labels:
+    {{- include "containerssh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: config-server
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "containerssh.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: config-server
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+{{- end }}

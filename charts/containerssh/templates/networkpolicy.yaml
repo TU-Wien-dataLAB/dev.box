@@ -1,0 +1,56 @@
+{{- /*
+NetworkPolicy for the session namespace: default-deny ingress, egress to the
+public internet only (plus optional cluster DNS). Follows the reference's
+"Limiting network access" section.
+Only rendered when RBAC management is on (the session namespace / Role setup is
+managed by the chart) and networkPolicy.enabled is true.
+*/}}
+{{- if and .Values.rbac.enabled .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: containerssh-sessions
+  namespace: {{ .Values.kubernetes.sessionNamespace }}
+  labels:
+    {{- include "containerssh.labels" . | nindent 4 }}
+spec:
+  # Applies to every pod in the session namespace.
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  # Deny all ingress: no other pod can reach session pods.
+  ingress: []
+  egress:
+    # Allow egress to the public internet only.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              {{- range .Values.networkPolicy.exceptRanges }}
+              - {{ . }}
+              {{- end }}
+    {{- if .Values.networkPolicy.allowClusterDNS }}
+    # Allow DNS lookups against the cluster resolver (kube-dns in kube-system).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- end }}
+    {{- range .Values.networkPolicy.extraEgress }}
+    - to:
+        {{- toYaml .to | nindent 10 }}
+      {{- with .ports }}
+      ports:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- end }}
+{{- end }}

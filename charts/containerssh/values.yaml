@@ -1,0 +1,282 @@
+# default: use the containerssh image to run the server
+image:
+  repository: containerssh/containerssh
+  tag: "v0.6"
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+podAnnotations: {}
+podLabels: {}
+
+# PodSecurityContext for the ContainerSSH *server* pod. Set to {} to disable.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+# SecurityContext for the ContainerSSH *server* container. Set to {} to disable.
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop: ["ALL"]
+
+resources: {}
+  # limits:
+  #   cpu: 500m
+  #   memory: 256Mi
+  # requests:
+  #   cpu: 100m
+  #   memory: 128Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+serviceAccount:
+  create: true
+  # name: "containerssh"   # override the auto-generated name
+  annotations: {}
+
+# RBAC for managing the session pods (Role/RoleBinding in the session namespace).
+# See the "Securing Kubernetes / Creating a service account" section of the reference.
+rbac:
+  enabled: true
+
+# NetworkPolicy applied to the session namespace (see the reference's
+# "Limiting network access" section). Session pods get: NO ingress, and egress
+# to the public internet only (+ cluster DNS). Everything internal
+# (RFC1918 -> Kubernetes API, services, other pods, cloud metadata) is blocked.
+networkPolicy:
+  enabled: true
+  # Allow UDP/TCP 53 to kube-dns (cluster DNS) so that "internet egress" can
+  # actually resolve names.
+  allowClusterDNS: true
+  # IPv4 ranges treated as "not internet" and therefore blocked. Adapt these to
+  # your cluster's pod/service CIDRs if they lie outside the defaults.
+  exceptRanges:
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+    - 100.64.0.0/10
+    - 169.254.0.0/16
+    - 198.18.0.0/15
+  # Additional egress peers besides the public internet, e.g. a cluster-internal
+  # service the session pods must reach. Each entry: {to: [...], ports: [...]} rendered
+  # as a standard NetworkPolicy egress rule.
+  extraEgress: []
+  #   - to:
+  #       - ipBlock:
+  #           cidr: 10.2.0.0/16
+  #     ports:
+  #       - port: 8080
+
+kubernetes:
+  # Namespace in which per-session SSH pods are created. ContainerSSH runs in the
+  # chart's release namespace, the per-session pods run here (recommended isolation).
+  sessionNamespace: containerssh-sessions
+  # Create the session namespace if it does not exist yet.
+  createSessionNamespace: true
+
+  # Execution mode: "connection" (default), "session" or "persistent".
+  # See "Persistent mode" / "Other options" in the reference.
+  mode: connection
+
+  connection:
+    # In-cluster API endpoint (resolves only inside the cluster). For out-of-cluster
+    # deployment override this with your API server host and provide
+    # cacertFile/bearerToken (see reference "Deploying outside of Kubernetes").
+    host: kubernetes.default.svc
+    path: /api
+    # In-cluster authentication using the chart's ServiceAccount:
+    bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+    cacertFile: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    # Optional connection overrides (uncomment as needed):
+    # serverName: kubernetes.default.svc
+    # username: ""
+    # password: ""
+    # bearerToken: ""
+    # cacert: |-
+    #   <PEM CA, e.g. --set-file kubernetes.connection.cacert=ca.crt>
+    # qps: 5
+    # burst: 10
+
+  pod:
+    # Additional pod metadata (labels, annotations, ...). `metadata.namespace` and
+    # `metadata.generateName` are managed by the chart (namespace = sessionNamespace).
+    metadata:
+      # labels:
+      #   team: ssh
+      # annotations:
+      #   note: "dev box"
+    # Pod spec. Defaults here implement the security guidance from the reference
+    # ("Preventing root escalation/memory/CPU exhaustion"). Override freely; the
+    # structure matches pod.spec (see `kubectl explain pod.spec`).
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: shell
+          image: containerssh/containerssh-guest-image
+          # ^ the official ContainerSSH guest image (name is set by ContainerSSH upstream)
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            limits:
+              memory: 128Mi
+              cpu: 500m
+          # env:
+          #   - name: VAR
+          #     value: Hello world!
+      # volumes:
+      #   - name: home
+      #     hostPath:
+      #       path: /home/ubuntu
+      #       type: Directory
+      # nodeName: <bind pod to a specific node>
+
+  # Pod templates selected by SSH username (when configServer.enabled=true).
+  # `ssh <name>@host` uses the template named after that username:
+  # the config server serves <name>.yaml to that user. Name one template
+  # "default" to give unmatched users a catch-all; users with no matching
+  # template fall back to the base `pod` config. Each item is a partial
+  # kubernetes.pod override (mode/metadata/spec/...); everything you leave out
+  # is inherited from `pod` above / the base config.
+  podTemplates:
+    # - name: ubuntu
+    #   spec:
+    #     containers:
+    #       - name: shell
+    #         image: ubuntu:22.04
+    #         command: ["/bin/bash"]
+    # - name: default
+    #   spec:
+    #     containers:
+    #       - name: shell
+    #         image: containerssh/containerssh-guest-image
+
+ssh:
+  # SSH listener port inside the container/pod
+  port: 2222
+  hostKey:
+    # Recommended: name of an existing Secret containing the key under the key "host.key".
+    # Create it exactly like the installation docs:
+    #   openssl genrsa | kubectl create secret generic <name> --from-file=host.key=/dev/stdin
+    existingSecret: ""
+    # Alternative: inline PEM host key (chart creates the Secret). Use:
+    #   helm install ... --set-file ssh.hostKey.privateKey=host.key
+    privateKey: ""
+
+# Auth backend, rendered as-is into config.yaml. ContainerSSH refuses to start
+# without at least one configured auth method.
+auth:
+  password:
+    method: webhook
+    webhook:
+      url: ""   # REQUIRED: URL of your authentication server
+
+# Configuration server (webhook): a per-connection config endpoint that ContainerSSH
+# calls and MERGES over the base config above. With the bundled configServer.enabled
+# it serves the pod templates from kubernetes.podTemplates (by SSH username,
+# all users). Leave url empty to disable.
+# WARNING: when enabled the server must be reachable — ContainerSSH DENIES the
+# connection if the config request fails (fail-closed).
+# When configServer.enabled=true and url is left empty, the chart automatically
+# points this at the bundled config-server Service.
+configserver:
+  url: ""
+  # Timeout for config requests (e.g. "5s").
+  timeout: 5s
+  # Forward sensitive metadata fields to the config server (default false).
+  transmitSensitiveMetadata: false
+  # Optional HTTP client settings (for HTTPS with a private CA / client certs):
+  # allowRedirects: false
+  # tlsVersion: "1.3"
+  # cacert: ""     # PEM, or a file path
+  # cert: ""       # client cert, PEM or file path
+  # key: ""        # client key, PEM or file path
+
+# Bundled config server (dev.box/config-server). When enabled, the chart deploys
+# it as a sibling Deployment + Service next to ContainerSSH, auto-wires
+# configserver.url to it, and feeds it the pod template files rendered from
+# kubernetes.podTemplates (served per username: ssh <user> -> <user>.yaml template).
+# Image must be built & pushed first (see the config-server README), then
+# referenced here.
+configServer:
+  enabled: false
+  # Must point at a built/pushed image — there is no public config-server image.
+  # Repo CI (/.github/workflows/config-server-image.yml) publishes it to
+  # ghcr.io/tu-wien-datalab/dev.box/config-server on push to main (tags: main,
+  # latest, sha-<x>). Default below targets that GHCR path.
+  image:
+    repository: ghcr.io/tu-wien-datalab/dev.box/config-server
+    tag: main
+    pullPolicy: IfNotPresent
+  # syslog-style: 7 debug (per-request lookups) ... 4 warning, 3 error, 2 crit
+  logLevel: 6
+  resources:
+    limits:
+      cpu: 100m
+      memory: 32Mi
+    requests:
+      cpu: 50m
+      memory: 16Mi
+
+# SSH Service that exposes the server.
+service:
+  type: ClusterIP
+  port: 2222
+  # nodePort: 30022          # for type: NodePort
+  # loadBalancerIP: ""       # for type: LoadBalancer
+  annotations: {}
+
+# Expose the SSH listener through the cluster's Traefik ingress (raw-TCP route).
+#
+# Why this is a TCP route and involves NO cert-manager:
+#   * `ssh ubuntu@host` is raw TCP, not HTTP(S). An HTTP Ingress can't carry the
+#     SSH protocol, and cert-manager (ACME) only issues X.509 certs for HTTPS.
+#   * SSH secures its own transport and identifies the server with an SSH *host
+#     key*, not a TLS cert. cert-manager can't provide one — and it isn't needed:
+#     the chart already auto-generates an ephemeral host key (see ssh.hostKey),
+#     so there is no manual TLS/key setup either way.
+#
+# One-time cluster prerequisite — Traefik only listens on the ports in its static
+# config (entrypoints) and only exposes what its LoadBalancer Service publishes,
+# so the traefik LB must forward a TCP port to the entryPoint below:
+#   kubectl -n traefik patch svc traefik --type=json -p \
+#     '[{"op":"add","path":"/spec/ports/-","value":{"name":"ssh","port":2222,"targetPort":2222,"protocol":"TCP"}}]'
+#   kubectl -n traefik patch deploy traefik --type=json -p \
+#     '[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--entryPoints.ssh.address=:2222/tcp"}]'
+# Then `ssh -p 2222 ubuntu@<traefik-lb-ip|host>` drops you into the "ubuntu" pod template
+# (the SSH login name selects the pod template; any name works as long as a matching
+# podTemplate exists or a `default` one catches unmatched users).
+ingress:
+  enabled: false                 # render a Traefik IngressRouteTCP for SSH
+  controller: traefik            # only Traefik (IngressRouteTCP) is supported
+  tcp:
+    entryPoint: ssh              # static TCP entrypoint on the traefik LB to route from
+    servicePort: 2222            # port on this chart's Service to route to (== service.port)
+    # match: 'HostSNI(`*`)'      # plain-TCP match rule; keep the default for raw TCP
+
+# Logging for the ContainerSSH *server*. Syslog-style level numbers:
+#   7 debug ... 6 info, 5 notice (default), 4 warning, 3 error, 2 crit
+log:
+  level: 5
+
+# Advanced: instead of the generated config.yaml, mount an existing ConfigMap
+# that contains a full ContainerSSH config under the key "config.yaml".
+# This bypasses the rendering above (host key mounts are disabled in that mode).
+existingConfigMap: ""
+
+# Extra arguments passed to the containerssh binary (valid flags: --config,
+# --dump-config, --licenses, --healthcheck).
+extraArgs: []
+  # - --dump-config
