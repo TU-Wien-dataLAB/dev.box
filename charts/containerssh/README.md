@@ -19,6 +19,7 @@ This chart is modeled on the official documentation:
 | `Namespace` *(optional)* | The session namespace where per-session pods run |
 | `NetworkPolicy` *(optional)* | Session pods: no ingress, egress to the public internet only |
 | `Secret` *(optional)* | Stable SSH host key (see below) |
+| `Deployment` + `Service` *(optional)* | Bundled authentik-backed auth server (`authServer.enabled`) |
 | `Service` | Exposes the SSH port (ClusterIP by default) |
 | `test-connection` Job | `helm test` smoke check that the SSH port is reachable |
 
@@ -46,7 +47,8 @@ kubernetes:
 - A Kubernetes cluster and a kube context (the chart assumes the deployment runs *inside* the
   cluster it manages; `kubernetes.connection.host=kubernetes.default.svc` only resolves in-cluster).
 - An authentication server reachable from the cluster (the chart requires one configured auth
-  method; by default it uses a password webhook — set `auth.password.webhook.url`).
+  method; by default it uses a password webhook — set `auth.password.webhook.url`). For
+  public-key auth against authentik, enable the bundled `authServer` (below) instead.
 
 > **Session pods vs. ContainerSSH pods**: by default the per-SSH-session pods are launched in a
 > **separate** namespace (`containerssh-sessions`) so that ContainerSSH itself does not share a
@@ -141,7 +143,8 @@ See `values.yaml` for the complete, annotated list. Highlights:
 | `kubernetes.mode` | `connection` | `connection` / `session` / `persistent` (see reference) |
 | `kubernetes.pod.metadata` | `{}` | Pod metadata extended and merged with defaults |
 | `kubernetes.pod.spec` | session container defaults | Full pod spec (image, volumes, resources, nodeName, securityContext…) |
-| `auth` | password webhook | Auth backend config, rendered as-is |
+| `auth` | password webhook | Auth webhooks (password/pubkey/authz) — auto-wired when the bundled auth server is enabled |
+| `authServer.enabled` | `false` | Deploy the bundled authentik-backed auth server and wire it |
 | `service.type`, `service.port` | `ClusterIP`, `2222` | SSH service type/port |
 | `ingress.enabled` | `false` | Expose SSH via a Traefik `IngressRouteTCP` (raw TCP) |
 | `ingress.tcp.entryPoint` | `ssh` | Traefik static TCP entrypoint (LB port) to route from |
@@ -154,6 +157,10 @@ See `values.yaml` for the complete, annotated list. Highlights:
 | `configserver.url` | `""` | Config server URL (auto-set when bundled server is enabled) |
 | `configServer.enabled` | `false` | Deploy the bundled config server in-chart |
 | `kubernetes.podTemplates` | `[]` | Pod templates selected by SSH username (template `name` = username) |
+| `authServer.authentik.url` | `""` | authentik base URL (required when `authServer.enabled`) |
+| `authServer.authentik.token` | `""` | authentik service token (chart creates a Secret) |
+| `authServer.authentik.tokenSecret` | `""` | existing Secret with the token (preferred over `token`) |
+| `authServer.syncInterval` | `""` | normalizing+fingerprint sync interval, e.g. `5m` |
 
 ## Per-username pod templates
 
@@ -219,6 +226,54 @@ helm install containerssh . \
   connection.
 - **Image required**: build and push `dev.box/config-server` and point `configServer.image` at it
   (no public image exists yet).
+
+## Bundled authentik auth server (`authServer.enabled`)
+
+SSH key auth for this setup is a lookup call only authentik's API can serve: **given a public key,
+find the user**. The bundled auth server (source in `dev.box/auth-server`, design in
+`auth-server/spec.md`) implements that against authentik by fingerprinting the presented key and
+querying the users API for the owner (`attributes.ssh_key_fingerprint`). It talks the ContainerSSH
+`auth/webhook` protocol and exposes `/pubkey` (plus `/password`, `/authz`, `/config`).
+
+Before enabling it:
+1. build/push the image (repo CI publishes it to `ghcr.io/tu-wien-datalab/dev.box/auth-server`),
+2. create an authentik **service account token** with read access to users, and
+3. make sure users have `attributes.ssh_public_key` set (self-service Prompt in the authentik
+   settings flow, or a provisioner) — new keys need a sync/fingerprint pass (see `authServer.syncInterval`).
+
+Example `values.yaml`:
+
+```yaml
+authServer:
+  enabled: true
+  authentik:
+    url: https://authentik.example.com
+    tokenSecret: authentik-service-token   # existing Secret, key "token"
+  syncInterval: 5m          # fingerprint free-form keys in the background
+  requireGroup: "ssh-users" # optional post-auth group gate
+```
+
+When enabled the chart: creates a Secret (from `token`, or reuses `tokenSecret`), deploys the
+server next to ContainerSSH, and auto-wires `auth.password/pubkey/authz.webhook.url` to its
+Service (`http://<release>-auth-server.<ns>.svc.cluster.local:8080`). SSH in with the authentik
+username whose key is enrolled:
+
+```bash
+helm install containerssh . \
+  --set authServer.enabled=true \
+  --set authServer.authentik.url=https://authentik.example.com \
+  --set-file authServer.authentik.token=service-token
+```
+
+See `auth-server/README.md` for all env knobs and the lookup flow.
+
+**Caveats:**
+- **Fail-closed**: while an auth webhook URL is set, ContainerSSH *denies* connections when the
+  auth request errors — authentik must be reachable from this pod.
+- **Password stays off** on the server by default; the `AUTH_SERVER_PASSWORD_USERS` escape hatch
+  (`authServer.passwordUsers`) grants logins with an unverified password — test/break-glass only.
+- **Key uniqueness is your contract**: one fingerprint may only ever belong to one user; the sync
+  flags (and refuses to write) duplicates.
 
 ## Security guidance (from the reference)
 

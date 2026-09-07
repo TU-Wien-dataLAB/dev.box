@@ -13,6 +13,10 @@ backend**: users SSH in and are dropped into ephemeral Kubernetes pods. It consi
 2. **`config-server/`** — a small Go server implementing the ContainerSSH config webhook protocol
    (built on `go.containerssh.io/containerssh` `config/webhook`), serving **pod templates selected
    by SSH username**.
+3. **`auth-server/`** — a small Go server implementing the ContainerSSH **auth** webhook protocol
+   (`auth/webhook`) that answers "given an SSH public key, which [authentik](https://goauthentik.io)
+   user owns it?" by fingerprint lookup (spec in `auth-server/spec.md`). Optional background sync
+   keeps user SSH keys normalized + fingerprinted.
 
 Reference docs (both official, version 0.6):
 - Installation in Kubernetes: https://containerssh.io/v0.6/getting-started/installation/ (Kubernetes tab)
@@ -44,12 +48,22 @@ dev.box/
 │       ├── networkpolicy.yaml (session pods: no ingress, egress internet-only)
 │       ├── secret-hostkey.yaml
 │       ├── configserver.yaml  (bundled config server: ConfigMap + Deployment + Service)
+│       ├── authserver.yaml    (bundled auth server: Secret + Deployment + Service; auto-wires auth.*.webhook.url)
 │       ├── NOTES.txt
 │       └── tests/test-connection.yaml
-└── config-server/             ← the config webhook server source
-    ├── main.go
+├── config-server/             ← the config webhook server source
+│   ├── main.go
+│   ├── Dockerfile
+│   ├── go.mod                 (go 1.25.3, requires go.containerssh.io/containerssh v0.6.0)
+│   └── README.md
+└── auth-server/               ← the authentik-backed auth webhook server source
+    ├── main.go                (env/config, wiring, service lifecycle)
+    ├── auth_handler.go        (OnPassword/OnPubKey/OnAuthorization + /config endpoint)
+    ├── authentik.go           (authentik users API client: lookup, group check, pagination)
+    ├── sync.go                (background key-normalize + fingerprint sync, spec §5.3)
+    ├── auth_server_test.go    (tests against an in-memory authentik mock)
     ├── Dockerfile
-    ├── go.mod                 (go 1.25.3, requires go.containerssh.io/containerssh v0.6.0)
+    ├── go.mod                 (go 1.25.3, requires go.containerssh.io/containerssh v0.6.0 + x/crypto)
     └── README.md
 ```
 
@@ -57,11 +71,15 @@ dev.box/
 
 ```
 ssh ubuntu@dev.box.example.com
-        │ 1. auth (+ optional config request)
+        │ 1. auth: SSH key presented
         ▼
    ContainerSSH (Deployment, port 2222)
-        │ 2. POST /config (username, ip, connectionId)
+        │ 1b. POST /pubkey (username, key) → auth-server
+        │     (fingerprint key → GET authentik users by attributes.ssh_key_fingerprint)
         ▼
+   auth-server (bundled, auto-wired auth.pubkey.webhook.url)  ⇄  authentik API
+        │ success → authenticated as key owner
+        ▼ 2. POST /config (username, ip, connectionId)
    config-server (bundled, auto-wired configserver.url)
         │ 3. reply: ONE pod template, merged over base config
         ▼
@@ -72,6 +90,10 @@ ssh ubuntu@dev.box.example.com
 - Per SSH **username** → a pod **template** with that name: `ssh ubuntu@…` → `ubuntu.yaml`.
 - Template lookup: `<username>.yaml` → `default.yaml` → (server empty → base pod).
 - The config-server response is **merged over the chart's base config** (see merge rule below).
+- SSH **key auth** is the auth-server's job: it canonicalizes + fingerprints the presented key and
+  queries authentik for the owning user (exact match on `attributes.ssh_key_fingerprint`). Nowhere in
+  ContainerSSH, this chart, or the auth server is a password verified against authentik — password
+  auth is off by default (test allowlist only).
 
 ## Chart key values (`charts/containerssh/values.yaml`)
 
@@ -81,7 +103,9 @@ ssh ubuntu@dev.box.example.com
 | `ssh.port` / `service.*` | `2222` / ClusterIP | SSH listener + exposure (NodePort/LB available) |
 | `ingress.enabled` / `ingress.tcp.*` | `false` / `ssh` | Traefik IngressRouteTCP (raw TCP) fronts the SSH port; **no cert-manager/TLS** — SSH is not HTTP |
 | `ssh.hostKey.existingSecret` / `.privateKey` | `""` | stable host key; else ephemeral key fallback |
-| `auth` | password webhook, url `""` | **required** before SSH works (auth server URL) |
+| `auth` | password webhook, url `""` | password/pubkey/authz webhook urls; **auto-wired to the bundled auth-server** when `authServer.enabled` |
+| `authServer.enabled` | `false` | deploy the bundled authentik-backed auth server + auto-wire `auth.password/pubkey/authz.webhook.url` |
+| `authServer.authentik.url` / `.token` | `""` | authentik base URL + service token (or `tokenSecret` existing Secret) — **required** when enabled |
 | `kubernetes.sessionNamespace` | `containerssh-sessions` | where per-session pods run (chart force-manages) |
 | `kubernetes.pod` | security hard defaults | base/fallback pod config |
 | `kubernetes.podTemplates` | `[]` | named pod templates (name = SSH username); needs `configServer.enabled` |
@@ -105,6 +129,14 @@ ssh ubuntu@dev.box.example.com
 - **Config server is fail-closed**: with `configserver.url` set, ContainerSSH *denies* connections
   when the config POST fails (retries every 10 s, non-200 = "Cannot authenticate at this time").
   Bundled server must be Ready before SSH works.
+- **Auth server is also fail-closed**: with an `auth.*.webhook.url` set, a non-200/error from the
+  auth request denies the connection (ContainerSSH retries until the method's `authTimeout`).
+  authentik must be reachable from the auth-server pod.
+- **Key-first, password-by-test-only**: the bundled auth server never verifies a password against
+  authentik; `authServer.passwordUsers` grants an UNVERIFIED password login (test/break-glass only).
+  Fingerprints must be unique across users — the sync flags (and refuses to write) duplicates.
+- **The bundled auth server is read-only** against authentik except for the optional
+  `authServer.syncInterval` job which PATCHes canonical key + fingerprint back (needs edit token).
 - **Config file loading applies struct defaults** (`structutils.Defaults` in
   `internal/config/loader_reader.go`) — the chart only renders what it overrides.
 - **`default` is a reserved template name** — it's the catch-all in the config server.
@@ -128,8 +160,12 @@ helm template smoke charts/containerssh -n containerssh            # render
 helm package charts/containerssh -d /tmp/sshtest
 
 # config server
-(cd config-server && go build ./... && go vet ./...)
+(cd config-server && go build ./... && go vet ./... && go test ./...)
 docker build -t config-server:dev config-server/                  # image
+
+# auth server
+(cd auth-server && go build ./... && go vet ./... && go test ./...)
+docker build -t auth-server:dev auth-server/                      # image
 
 # strongest config validation: feed the rendered config.yaml to the real binary
 # (the token/ca.crt files must exist or create fake ones):
@@ -155,10 +191,17 @@ The rendered config is validated this way after every template change that alter
   `ghcr.io/tu-wien-datalab/dev.box/config-server` is in `.github/workflows/config-server-image.yml`
   (runs on push to `main`; needs the GHCR package pullable — public, or an `imagePullSecrets` entry).
   `configServer.image.repository` already defaults to that GHCR path.
+- **Auth-server built & unit-tested locally** (`go build/vet/test` green, incl. race). CI to publish
+  it to `ghcr.io/tu-wien-datalab/dev.box/auth-server` is in `.github/workflows/auth-server-image.yml`.
+  `authServer.image.repository` already defaults to that GHCR path. Not image-built/smoke-tested with
+  Docker yet (Docker daemon was off during implementation).
 
 Remaining before `helm install`:
-  1. Create the GitHub repo + push (the config-server image CI runs then).
-  2. Choose an auth server and set `auth.password.webhook.url` (config server does **not** auth).
+  1. Create the GitHub repo + push (the image CIs run then).
+  2. Enroll users in authentik (self-service Prompt → `attributes.ssh_public_key`, or provisioner) and
+     create an authentik service-account token for `authServer.authentik.token`/`tokenSecret`; then
+     `--set authServer.enabled=true --set authServer.authentik.url=…`. (The old step "choose an auth
+     server" is now done in-repo — the bundled auth-server is the auth server.)
   3. Optional: a stable SSH host key (`ssh.hostKey.existingSecret` vs ephemeral).
   4. Optional, later: `ingress.enabled=true` + the one-time Traefik TCP entrypoint/port setup
      (see values.yaml `ingress`, NOTES.txt).

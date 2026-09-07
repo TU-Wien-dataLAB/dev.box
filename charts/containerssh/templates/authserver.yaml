@@ -1,0 +1,170 @@
+{{- /*
+Bundled authentik-backed auth server (dev.box/auth-server).
+Rendered only when authServer.enabled=true: an optional Secret with the authentik
+service tokens, a Deployment for the server, and a Service. The ContainerSSH
+auth.*.webhook.url values are auto-wired to this Service in configmap.yaml.
+*/}}
+{{- if .Values.authServer.enabled }}
+{{- $authFullname := printf "%s-auth-server" (include "containerssh.fullname" .) }}
+{{- /* resolved read-token source: existing secret wins over the inline token */}}
+{{- $readSecret := $authFullname }}
+{{- $readKey := "token" }}
+{{- if .Values.authServer.authentik.tokenSecret }}
+{{- $readSecret = .Values.authServer.authentik.tokenSecret }}
+{{- $readKey = default "token" .Values.authServer.authentik.tokenSecretKey }}
+{{- end }}
+{{- /* write token is only wired when explicitly configured */}}
+{{- $writeConfigured := or .Values.authServer.authentik.writeToken .Values.authServer.authentik.writeTokenSecret }}
+{{- $writeSecret := $authFullname }}
+{{- $writeKey := "write-token" }}
+{{- if .Values.authServer.authentik.writeTokenSecret }}
+{{- $writeSecret = .Values.authServer.authentik.writeTokenSecret }}
+{{- $writeKey = default "write-token" .Values.authServer.authentik.writeTokenSecretKey }}
+{{- end }}
+{{- if and (not .Values.authServer.authentik.tokenSecret) (or .Values.authServer.authentik.token .Values.authServer.authentik.writeToken) }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $authFullname }}
+  labels:
+    {{- include "containerssh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: auth-server
+stringData:
+  {{- with .Values.authServer.authentik.token }}
+  token: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.authServer.authentik.writeToken }}
+  write-token: {{ . | quote }}
+  {{- end }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $authFullname }}
+  labels:
+    {{- include "containerssh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: auth-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "containerssh.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: auth-server
+  template:
+    metadata:
+      labels:
+        {{- include "containerssh.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: auth-server
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: auth-server
+          image: "{{ .Values.authServer.image.repository }}:{{ .Values.authServer.image.tag }}"
+          imagePullPolicy: {{ .Values.authServer.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: CONTAINERSSH_LISTEN
+              value: 0.0.0.0:8080
+            - name: CONTAINERSSH_LOG_LEVEL
+              value: {{ .Values.authServer.logLevel | quote }}
+            - name: AUTHENTIK_URL
+              value: {{ required "authServer.authentik.url is required when authServer.enabled" .Values.authServer.authentik.url | quote }}
+            - name: AUTHENTIK_TOKEN_FILE
+              value: /var/run/secrets/dev.box/token
+            {{- if $writeConfigured }}
+            - name: AUTHENTIK_WRITE_TOKEN_FILE
+              value: /var/run/secrets/dev.box/write-token
+            {{- end }}
+            - name: AUTH_SERVER_ENFORCE_USERNAME
+              value: {{ .Values.authServer.enforceUsername | quote }}
+            {{- with .Values.authServer.requireGroup }}
+            - name: AUTH_SERVER_REQUIRE_GROUP
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.authServer.passwordUsers }}
+            - name: AUTH_SERVER_PASSWORD_USERS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.authServer.syncInterval }}
+            - name: AUTH_SERVER_SYNC_INTERVAL
+              value: {{ . | quote }}
+            {{- end }}
+            - name: AUTH_SERVER_SYNC_WRITE
+              value: {{ .Values.authServer.syncWrite | quote }}
+            {{- if .Values.authServer.authentik.insecureSkipVerify }}
+            - name: AUTHENTIK_INSECURE_SKIP_VERIFY
+              value: "true"
+            {{- end }}
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.authServer.resources | nindent 12 }}
+          volumeMounts:
+            - name: auth-read-token
+              mountPath: /var/run/secrets/dev.box/token
+              subPath: token
+              readOnly: true
+            {{- if $writeConfigured }}
+            - name: auth-write-token
+              mountPath: /var/run/secrets/dev.box/write-token
+              subPath: write-token
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: auth-read-token
+          secret:
+            secretName: {{ $readSecret }}
+            items:
+              - key: {{ $readKey }}
+                path: token
+        {{- if $writeConfigured }}
+        - name: auth-write-token
+          secret:
+            secretName: {{ $writeSecret }}
+            items:
+              - key: {{ $writeKey }}
+                path: write-token
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $authFullname }}
+  labels:
+    {{- include "containerssh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: auth-server
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "containerssh.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: auth-server
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+{{- end }}

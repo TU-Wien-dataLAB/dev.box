@@ -36,6 +36,17 @@ secures the transport itself).
 2. Connect (requires a running authentication server, see auth.password.webhook.url):
     ssh -p {{ .Values.service.port }} <user>@localhost
 
+{{- if .Values.authServer.enabled }}
+2a. Bundled authentik-backed auth server deployed at
+    {{ include "containerssh.fullname" . }}-auth-server.{{ .Release.Namespace }}:8080 and
+    auto-wired to auth.password/pubkey/authz.webhook.url. SSH in with the authentik
+    user whose key is enrolled (fingerprint must be synced for new keys — see
+    authServer.syncInterval):
+    ssh -p {{ .Values.service.port }} <authentik-username>@localhost
+    If the pod is not Ready, check authServer.authentik.url/token and that the image
+    was built/pushed (see auth-server README).
+{{- end }}
+
 {{- if .Values.configServer.enabled }}
 2b. Bundled config server deployed at
     {{ include "containerssh.fullname" . }}-config-server.{{ .Release.Namespace }}:8080 and

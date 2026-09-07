@@ -175,13 +175,25 @@ ssh:
     #   helm install ... --set-file ssh.hostKey.privateKey=host.key
     privateKey: ""
 
-# Auth backend, rendered as-is into config.yaml. ContainerSSH refuses to start
-# without at least one configured auth method.
+# Auth webhooks, rendered into config.yaml. ContainerSSH refuses to start
+# without at least one configured auth method. Each `url` points at an auth
+# server; when the bundled authServer (below) is enabled, the chart AUTO-WIRES
+# all three urls to its Service. Leave a url empty to keep that method
+# unconfigured (password is always rendered; pubkey/authz blocks are only
+# rendered once usable).
 auth:
   password:
     method: webhook
     webhook:
-      url: ""   # REQUIRED: URL of your authentication server
+      url: ""   # REQUIRED for password auth: URL of your authentication server
+  pubkey:
+    method: webhook
+    webhook:
+      url: ""   # SSH public-key auth (authentik-backed via authServer)
+  authz:
+    method: webhook
+    webhook:
+      url: ""   # post-auth authorization (optional group gate)
 
 # Configuration server (webhook): a per-connection config endpoint that ContainerSSH
 # calls and MERGES over the base config above. With the bundled configServer.enabled
@@ -222,6 +234,65 @@ configServer:
     pullPolicy: IfNotPresent
   # syslog-style: 7 debug (per-request lookups) ... 4 warning, 3 error, 2 crit
   logLevel: 6
+  resources:
+    limits:
+      cpu: 100m
+      memory: 32Mi
+    requests:
+      cpu: 50m
+      memory: 16Mi
+
+# Bundled auth server (dev.box/auth-server). When enabled, the chart deploys it
+# as a sibling Deployment + Service next to ContainerSSH and auto-wires
+# auth.password/pubkey/authz.webhook.url to it. It does the authentik-backed SSH
+# public-key lookup (see auth-server/README.md & auth-server/spec.md): the server
+# fingerprints the presented key and queries authentik's users API for the owner
+# (attributes.ssh_key_fingerprint), denying otherwise. Password auth stays
+# disabled by default on the server (AUTH_SERVER_PASSWORD_USERS empty).
+#
+# Required before SSH works: an authentik URL + a service-account token with read
+# access to users (the image must also be built/pushed — see auth-server README).
+authServer:
+  enabled: false
+  # Must point at a built/pushed image — there is no public auth-server image.
+  # Repo CI (/.github/workflows/auth-server-image.yml) publishes it to
+  # ghcr.io/tu-wien-datalab/dev.box/auth-server on push to main.
+  image:
+    repository: ghcr.io/tu-wien-datalab/dev.box/auth-server
+    tag: main
+    pullPolicy: IfNotPresent
+  # syslog-style: 7 debug (per-request lookups) ... 4 warning, 3 error, 2 crit
+  logLevel: 6
+  # authentik connection + behaviour (mirrors the auth-server env vars):
+  authentik:
+    url: ""                         # REQUIRED, e.g. https://authentik.example.com
+    # Service-account token with read (view) access to users. Provide it inline
+    # (the chart creates a Secret) or reference an existing Secret:
+    token: ""
+    tokenSecret: ""                 # existing Secret (takes precedence over token)
+    tokenSecretKey: "token"         # key inside that Secret
+    # Optional separate token with write (edit) access to users for the
+    # fingerprint-sync. Falls back to the read token when empty. A write token is
+    # mounted/used only when one is configured.
+    writeToken: ""
+    writeTokenSecret: ""
+    writeTokenSecretKey: "token"
+    # AUTHENTIK_INSECURE_SKIP_VERIFY — dev only.
+    insecureSkipVerify: false
+  # AUTH_SERVER_ENFORCE_USERNAME: require ssh <user>@host to equal the authentik
+  # owner of the key (prevents impersonation).
+  enforceUsername: true
+  # AUTH_SERVER_REQUIRE_GROUP: when set, require membership of this authentik
+  # group (post-auth authorization gate). Empty = allow all authenticated users.
+  requireGroup: ""
+  # AUTH_SERVER_PASSWORD_USERS: comma-separated usernames allowed password auth
+  # (ANY password — test/break-glass only, unverified). Empty = password auth off.
+  passwordUsers: ""
+  # AUTH_SERVER_SYNC_INTERVAL: normalizing+fingerprint sync interval, e.g. "5m".
+  # Empty = sync disabled. See auth-server/README.md §The normalizing sync.
+  syncInterval: ""
+  # AUTH_SERVER_SYNC_WRITE: false = sync runs dry-run (report only).
+  syncWrite: true
   resources:
     limits:
       cpu: 100m
