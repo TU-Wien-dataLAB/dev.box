@@ -175,12 +175,12 @@ ssh:
     #   helm install ... --set-file ssh.hostKey.privateKey=host.key
     privateKey: ""
 
-# Auth webhooks, rendered into config.yaml. ContainerSSH refuses to start
-# without at least one configured auth method. Each `url` points at an auth
-# server; when the bundled authServer (below) is enabled, the chart AUTO-WIRES
-# all three urls to its Service. Leave a url empty to keep that method
-# unconfigured (password is always rendered; pubkey/authz blocks are only
-# rendered once usable).
+# Auth webhooks, rendered into config.yaml. A usable SSH deployment needs at
+# least one configured authentication method, so chart rendering fails unless
+# authServer.enabled or a password/public-key webhook URL is set.
+# Authorization is post-auth and does not satisfy this requirement. When the
+# bundled authServer (below) is enabled, the chart AUTO-WIRES all three URLs to
+# its Service. Otherwise, each method is rendered only when its URL is set.
 auth:
   password:
     method: webhook

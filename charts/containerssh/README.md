@@ -46,9 +46,10 @@ kubernetes:
 
 - A Kubernetes cluster and a kube context (the chart assumes the deployment runs *inside* the
   cluster it manages; `kubernetes.connection.host=kubernetes.default.svc` only resolves in-cluster).
-- An authentication server reachable from the cluster (the chart requires one configured auth
-  method; by default it uses a password webhook — set `auth.password.webhook.url`). For
-  public-key auth against authentik, enable the bundled `authServer` (below) instead.
+- An authentication server reachable from the cluster. Chart rendering fails unless the bundled
+  `authServer` is enabled or `auth.password.webhook.url` / `auth.pubkey.webhook.url` is set;
+  authorization alone is not an authentication method. For public-key auth against authentik,
+  enable the bundled `authServer` (below).
 
 > **Session pods vs. ContainerSSH pods**: by default the per-SSH-session pods are launched in a
 > **separate** namespace (`containerssh-sessions`) so that ContainerSSH itself does not share a
@@ -143,7 +144,7 @@ See `values.yaml` for the complete, annotated list. Highlights:
 | `kubernetes.mode` | `connection` | `connection` / `session` / `persistent` (see reference) |
 | `kubernetes.pod.metadata` | `{}` | Pod metadata extended and merged with defaults |
 | `kubernetes.pod.spec` | session container defaults | Full pod spec (image, volumes, resources, nodeName, securityContext…) |
-| `auth` | password webhook | Auth webhooks (password/pubkey/authz) — auto-wired when the bundled auth server is enabled |
+| `auth.*.webhook.url` | `""` | External auth webhooks; password or pubkey is required unless the bundled auth server is enabled |
 | `authServer.enabled` | `false` | Deploy the bundled authentik-backed auth server and wire it |
 | `service.type`, `service.port` | `ClusterIP`, `2222` | SSH service type/port |
 | `ingress.enabled` | `false` | Expose SSH via a Traefik `IngressRouteTCP` (raw TCP) |

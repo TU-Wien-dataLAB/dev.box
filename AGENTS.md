@@ -8,7 +8,7 @@ maintainers the context needed to work here safely.
 A personal dev sandbox for running [ContainerSSH](https://containerssh.io) with the **Kubernetes
 backend**: users SSH in and are dropped into ephemeral Kubernetes pods. It consists of:
 
-1. **`charts/containerssh/`** — a Helm chart (v2, `containerssh-0.1.0`, `appVersion: 0.6`) that
+1. **`charts/containerssh/`** — a Helm chart (v2, `containerssh-0.1.1`, `appVersion: 0.6`) that
    deploys ContainerSSH itself plus optional extras.
 2. **`config-server/`** — a small Go server implementing the ContainerSSH config webhook protocol
    (built on `go.containerssh.io/containerssh` `config/webhook`), serving **pod templates selected
@@ -34,7 +34,7 @@ Source of truth for ContainerSSH internals: `/Users/matthiasmatt/Documents/Work/
 dev.box/
 ├── AGENTS.md                  ← this file
 ├── charts/containerssh/       ← the Helm chart
-│   ├── Chart.yaml             (name containerssh, v0.1.0, appVersion 0.6)
+│   ├── Chart.yaml             (name containerssh, v0.1.1, appVersion 0.6)
 │   ├── values.yaml            (everything is configurable from here)
 │   ├── README.md
 │   └── templates/
@@ -56,15 +56,19 @@ dev.box/
 │   ├── Dockerfile
 │   ├── go.mod                 (go 1.25.3, requires go.containerssh.io/containerssh v0.6.0)
 │   └── README.md
-└── auth-server/               ← the authentik-backed auth webhook server source
-    ├── main.go                (env/config, wiring, service lifecycle)
-    ├── auth_handler.go        (OnPassword/OnPubKey/OnAuthorization + /config endpoint)
-    ├── authentik.go           (authentik users API client: lookup, group check, pagination)
-    ├── sync.go                (background key-normalize + fingerprint sync, spec §5.3)
-    ├── auth_server_test.go    (tests against an in-memory authentik mock)
-    ├── Dockerfile
-    ├── go.mod                 (go 1.25.3, requires go.containerssh.io/containerssh v0.6.0 + x/crypto)
-    └── README.md
+├── auth-server/               ← the authentik-backed auth webhook server source
+│   ├── main.go                (env/config, wiring, service lifecycle)
+│   ├── auth_handler.go        (OnPassword/OnPubKey/OnAuthorization + /config endpoint)
+│   ├── authentik.go           (authentik users API client: lookup, group check, pagination)
+│   ├── sync.go                (background key-normalize + fingerprint sync, spec §5.3)
+│   ├── auth_server_test.go    (tests against an in-memory authentik mock)
+│   ├── Dockerfile
+│   ├── go.mod                 (go 1.25.3, requires go.containerssh.io/containerssh v0.6.0 + x/crypto)
+│   └── README.md
+└── tests/
+    ├── chart-auth-rendering.sh     (Helm auth fail-fast/render matrix)
+    ├── cluster-deployment-spec.md  (staged real-cluster acceptance plan)
+    └── spec.md                     (proposed image/wire contract framework)
 ```
 
 ## How it fits together
@@ -103,7 +107,7 @@ ssh ubuntu@dev.box.example.com
 | `ssh.port` / `service.*` | `2222` / ClusterIP | SSH listener + exposure (NodePort/LB available) |
 | `ingress.enabled` / `ingress.tcp.*` | `false` / `ssh` | Traefik IngressRouteTCP (raw TCP) fronts the SSH port; **no cert-manager/TLS** — SSH is not HTTP |
 | `ssh.hostKey.existingSecret` / `.privateKey` | `""` | stable host key; else ephemeral key fallback |
-| `auth` | password webhook, url `""` | password/pubkey/authz webhook urls; **auto-wired to the bundled auth-server** when `authServer.enabled` |
+| `auth.*.webhook.url` | `""` | external password/pubkey/authz webhook URLs; chart rendering requires password or pubkey unless **auto-wired to the bundled auth-server** |
 | `authServer.enabled` | `false` | deploy the bundled authentik-backed auth server + auto-wire `auth.password/pubkey/authz.webhook.url` |
 | `authServer.authentik.url` / `.token` | `""` | authentik base URL + service token (or `tokenSecret` existing Secret) — **required** when enabled |
 | `kubernetes.sessionNamespace` | `containerssh-sessions` | where per-session pods run (chart force-manages) |
@@ -129,6 +133,10 @@ ssh ubuntu@dev.box.example.com
 - **Config server is fail-closed**: with `configserver.url` set, ContainerSSH *denies* connections
   when the config POST fails (retries every 10 s, non-200 = "Cannot authenticate at this time").
   Bundled server must be Ready before SSH works.
+- **At least one authentication method is required by the chart**: authz is post-auth and does not
+  count. ContainerSSH v0.6 can start with an omitted `auth` block via legacy defaults but has no
+  usable webhook authenticator; the chart therefore fails rendering unless `authServer.enabled` or
+  a password/public-key webhook URL is set, and never renders `method: webhook` with an empty URL.
 - **Auth server is also fail-closed**: with an `auth.*.webhook.url` set, a non-200/error from the
   auth request denies the connection (ContainerSSH retries until the method's `authTimeout`).
   authentik must be reachable from the auth-server pod.
@@ -155,8 +163,10 @@ ssh ubuntu@dev.box.example.com
 
 ```bash
 # chart
-helm lint charts/containerssh
-helm template smoke charts/containerssh -n containerssh            # render
+helm lint charts/containerssh --set auth.pubkey.webhook.url=https://auth.example.test
+helm template smoke charts/containerssh -n containerssh \
+  --set auth.pubkey.webhook.url=https://auth.example.test            # render
+tests/chart-auth-rendering.sh                                        # auth render matrix
 helm package charts/containerssh -d /tmp/sshtest
 
 # config server
@@ -184,8 +194,12 @@ The rendered config is validated this way after every template change that alter
 - Target cluster context: **`container-ssh`** (created; control plane reachable).
   Current default context is `ai-platform` — pass `--kube-context container-ssh` explicitly
   (helm) / `--context container-ssh` (kubectl).
-- **Nothing deployed yet.** The chart is deploy-ready with `ingress.enabled=false` (ClusterIP +
-  port-forward); the Traefik `IngressRouteTCP` support exists but is off for now.
+- A failed smoke-test release exists in namespace `containerssh`: Helm revision 2 is
+  `pending-upgrade` after an aborted upgrade. The config-server and ContainerSSH pods are currently
+  Ready, but the mounted config is the omission-only auth draft and has no usable authenticator.
+  Treat this as failed test state; uninstall it only as the first step of
+  `tests/cluster-deployment-spec.md`.
+  Ingress remains disabled (ClusterIP + port-forward).
 - **Config-server image built & smoke-tested locally** (`config-server:dev`, Docker; verified
   `ubuntu@…` → `ubuntu:22.04` template, unknown user → base). CI to publish it to
   `ghcr.io/tu-wien-datalab/dev.box/config-server` is in `.github/workflows/config-server-image.yml`
@@ -196,20 +210,22 @@ The rendered config is validated this way after every template change that alter
   `authServer.image.repository` already defaults to that GHCR path. Not image-built/smoke-tested with
   Docker yet (Docker daemon was off during implementation).
 
-Remaining before `helm install`:
-  1. Create the GitHub repo + push (the image CIs run then).
-  2. Enroll users in authentik (self-service Prompt → `attributes.ssh_public_key`, or provisioner) and
-     create an authentik service-account token for `authServer.authentik.token`/`tokenSecret`; then
-     `--set authServer.enabled=true --set authServer.authentik.url=…`. (The old step "choose an auth
-     server" is now done in-repo — the bundled auth-server is the auth server.)
-  3. Optional: a stable SSH host key (`ssh.hostKey.existingSecret` vs ephemeral).
+Remaining before the staged cluster validation:
+  1. Enroll a dedicated test user/key in production authentik and ensure its fingerprint attribute is
+     present; create a read-only service token in an existing Kubernetes Secret.
+  2. Create or choose a stable SSH host-key Secret.
+  3. Uninstall the current `pending-upgrade` release according to
+     `tests/cluster-deployment-spec.md`, then clean-install the bundled auth/config servers.
   4. Optional, later: `ingress.enabled=true` + the one-time Traefik TCP entrypoint/port setup
      (see values.yaml `ingress`, NOTES.txt).
 
 Typical install command (no ingress):
   ```bash
-  helm install -f values.yaml containerssh charts/containerssh \
-    --kube-context container-ssh --namespace containerssh --create-namespace
+  helm install containerssh charts/containerssh \
+    --kube-context container-ssh --namespace containerssh --create-namespace \
+    --set authServer.enabled=true \
+    --set authServer.authentik.url=https://authentik.example.com \
+    --set authServer.authentik.tokenSecret=containerssh-authentik-token
   ```
   then `kubectl --context container-ssh port-forward -n containerssh svc/containerssh 2222:2222`
   and `ssh -p 2222 ubuntu@localhost`.
