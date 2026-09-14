@@ -94,3 +94,9 @@ settings, so keep it TLS/mTLS rather than plain HTTP.
   it out to fall back to the base pod for unknown users.
 - **Rejecting users is not its job**: this is the *config* server. Authentication/authorization
   belongs to the auth server; return errors here only for genuine server-side problems.
+- **Persistent mode is the dev.box target, not current behavior**: ContainerSSH v0.6 requires an
+  exact `kubernetes.pod.metadata.name` in persistent mode. The planned config-server change must
+  derive a stable, collision-resistant DNS-1123 pod name from the canonical authenticated identity
+  (`authenticatedUsername`) and return it with `mode: persistent` and `createMissingPods: true`. Today this server only returns static templates,
+  and the chart does not render `createMissingPods`; setting `kubernetes.mode=persistent` alone is
+  therefore not a working persistent deployment.

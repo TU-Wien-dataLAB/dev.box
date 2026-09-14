@@ -1,7 +1,8 @@
 # Helm Chart for ContainerSSH with the Kubernetes Backend
 
-Deploys [ContainerSSH](https://containerssh.io/) so that every SSH user is dropped into their own
-ephemeral Kubernetes pod. Pods are created on demand and cleaned up when the user disconnects.
+Deploys [ContainerSSH](https://containerssh.io/) with its Kubernetes backend. The chart supports
+ContainerSSH's connection, session, and persistent pod lifecycles. The **dev.box deployment target
+is persistent mode**: each authenticated user reuses a stable pod across SSH disconnects.
 
 This chart is modeled on the official documentation:
 
@@ -15,9 +16,9 @@ This chart is modeled on the official documentation:
 | `Deployment` | Runs the `containerssh/containerssh` SSH server (default port **2222**) |
 | `ConfigMap` | Renders the ContainerSSH `config.yaml` (Kubernetes backend) from `values.yaml` |
 | `ServiceAccount` | Identity used *by ContainerSSH* to talk to the Kubernetes API (bearer token + in-cluster CA) |
-| `Role` + `RoleBinding` | Least-privilege RBAC that lets the ServiceAccount create/exec/log session pods **only** in the session namespace (see the "Securing Kubernetes" section of the reference) |
-| `Namespace` *(optional)* | The session namespace where per-session pods run |
-| `NetworkPolicy` *(optional)* | Session pods: no ingress, egress to the public internet only |
+| `Role` + `RoleBinding` | Least-privilege RBAC that lets the ServiceAccount create/exec/log backend user pods **only** in their namespace (see the "Securing Kubernetes" section of the reference) |
+| `Namespace` *(optional)* | The isolated namespace where backend user pods run |
+| `NetworkPolicy` *(optional)* | Backend user pods: no ingress, egress to the public internet only |
 | `Secret` *(optional)* | Stable SSH host key (see below) |
 | `Deployment` + `Service` *(optional)* | Bundled authentik-backed auth server (`authServer.enabled`) |
 | `Service` | Exposes the SSH port (ClusterIP by default) |
@@ -51,9 +52,35 @@ kubernetes:
   authorization alone is not an authentication method. For public-key auth against authentik,
   enable the bundled `authServer` (below).
 
-> **Session pods vs. ContainerSSH pods**: by default the per-SSH-session pods are launched in a
-> **separate** namespace (`containerssh-sessions`) so that ContainerSSH itself does not share a
-> namespace with the untrusted pods it spawns, as recommended in the reference.
+> **User pods vs. ContainerSSH pods**: backend user pods run in a **separate** namespace
+> (`containerssh-sessions`) so that ContainerSSH itself does not share a namespace with the
+> untrusted pods it accesses or spawns, as recommended in the reference.
+
+## Persistent mode (dev.box target)
+
+ContainerSSH v0.6 persistent mode looks up an exact pod by
+`kubernetes.pod.metadata.name`, executes SSH channels in that pod, and skips pod removal when the
+SSH connection closes. With `createMissingPods: true`, it creates the named pod on first use; with
+that setting false, the pod must already exist.
+
+The intended dev.box lifecycle is:
+
+1. derive one deterministic, collision-resistant DNS-1123 pod name from the canonical authenticated
+   user (`authenticatedUsername`);
+2. use `mode: persistent` and `createMissingPods: true` to create it on demand;
+3. reuse that same pod name and pod across reconnects; and
+4. remove it only through an explicit administrative lifecycle/cleanup policy.
+
+This target is **not fully implemented in the chart yet**. The values path still defaults to
+`connection`, force-renders `metadata.generateName`, does not expose `createMissingPods`, and the
+bundled config server does not yet inject a per-user `metadata.name`. Do not set
+`kubernetes.mode=persistent` by itself: without the stable name and creation setting, connections
+cannot get an on-demand persistent pod.
+
+Persistent mode preserves the **pod lifecycle**, not data independently of the pod. A pod's writable
+layer is still lost if the pod is deleted, evicted, or recreated; mount a PVC or another durable
+store for data that must survive those events. Changes to a pod template also do not update an
+already-created persistent pod; recreate or migrate that pod explicitly to apply image/spec changes.
 
 ## Install
 
@@ -139,22 +166,22 @@ See `values.yaml` for the complete, annotated list. Highlights:
 | `ssh.port` | `2222` | SSH listener port |
 | `ssh.hostKey.existingSecret` | `""` | Name of a Secret holding `host.key` (recommended) |
 | `ssh.hostKey.privateKey` | `""` | Inline PEM host key (chart creates the Secret from it) |
-| `kubernetes.sessionNamespace` | `containerssh-sessions` | Namespace where per-session pods are created |
+| `kubernetes.sessionNamespace` | `containerssh-sessions` | Namespace where backend user pods run |
 | `kubernetes.createSessionNamespace` | `true` | Create that namespace if it doesn't exist |
-| `kubernetes.mode` | `connection` | `connection` / `session` / `persistent` (see reference) |
+| `kubernetes.mode` | `connection` | Chart default; dev.box target is `persistent` after the support gaps above are implemented |
 | `kubernetes.pod.metadata` | `{}` | Pod metadata extended and merged with defaults |
-| `kubernetes.pod.spec` | session container defaults | Full pod spec (image, volumes, resources, nodeName, securityContext…) |
+| `kubernetes.pod.spec` | backend user-container defaults | Full pod spec (image, volumes, resources, nodeName, securityContext…) |
 | `auth.*.webhook.url` | `""` | External auth webhooks; password or pubkey is required unless the bundled auth server is enabled |
 | `authServer.enabled` | `false` | Deploy the bundled authentik-backed auth server and wire it |
 | `service.type`, `service.port` | `ClusterIP`, `2222` | SSH service type/port |
 | `ingress.enabled` | `false` | Expose SSH via a Traefik `IngressRouteTCP` (raw TCP) |
 | `ingress.tcp.entryPoint` | `ssh` | Traefik static TCP entrypoint (LB port) to route from |
 | `ingress.tcp.servicePort` | `2222` | Chart Service port the route targets (== `service.port`) |
-| `rbac.enabled` | `true` | Create the session-pod Role/RoleBinding |
+| `rbac.enabled` | `true` | Create the backend-pod Role/RoleBinding |
 | `networkPolicy.enabled` | `true` | NetworkPolicy on the session namespace |
 | `networkPolicy.allowClusterDNS` | `true` | Allow DNS to kube-dns so internet egress resolves names |
 | `networkPolicy.exceptRanges` | RFC1918, CGNAT, link-local | CIDRs treated as "not internet" (blocked) |
-| `networkPolicy.extraEgress` | `[]` | Extra egress peers for session pods |
+| `networkPolicy.extraEgress` | `[]` | Extra egress peers for backend user pods |
 | `configserver.url` | `""` | Config server URL (auto-set when bundled server is enabled) |
 | `configServer.enabled` | `false` | Deploy the bundled config server in-chart |
 | `kubernetes.podTemplates` | `[]` | Pod templates selected by SSH username (template `name` = username) |
@@ -222,9 +249,9 @@ helm install containerssh . \
 **Caveats:**
 - **Fail-closed**: while `configserver.url` is set (auto when the bundled server is enabled),
   ContainerSSH *denies* connections when the config request errors — the server must be up.
-- **One pod per connection**: a connection always uses the single config it fetched. Several
-  templates mean different connections/users land in different pods — not several pods inside one
-  connection.
+- **One config per connection**: a connection always uses the single config it fetched. In
+  connection mode this normally creates a pod for that connection; in the planned persistent mode,
+  multiple connections for one authenticated user resolve to and exec in the same named pod.
 - **Image required**: build and push `dev.box/config-server` and point `configServer.image` at it
   (no public image exists yet).
 
@@ -285,12 +312,12 @@ reference:
 - mount per-user volumes (they cannot be preconfigured globally — use the configuration server),
 - apply the `readOnlyRootFilesystem` policy/PSP to the session namespace,
 - if you enforce the Pod Security `restricted` profile on the session namespace, add
-  `seccompProfile: {type: RuntimeDefault}` to the session pod spec (the chart does this manually), and
+  `seccompProfile: {type: RuntimeDefault}` to the backend pod spec (the chart does this manually), and
 - the chart ships a `NetworkPolicy` on the session namespace that already implements the
   reference's "Limiting network access" example: **no ingress**, and egress to the public
   internet only. Internal ranges are blocked by default (adapt `networkPolicy.exceptRanges`
   to your pod/service CIDRs, and use `networkPolicy.extraEgress` to open specific
-  cluster-internal services the session pods must reach). Disable with `networkPolicy.enabled: false`
+  cluster-internal services the backend user pods must reach). Disable with `networkPolicy.enabled: false`
   if your CNI does not support NetworkPolicies.
 
 ## Uninstall
@@ -299,5 +326,6 @@ reference:
 helm uninstall containerssh -n containerssh
 ```
 
-Note: session pods are owned by ContainerSSH, not by this chart — they are removed when their SSH
-session ends. If any remain, clean up the session namespace yourself.
+Backend pods are not owned by the Helm release. ContainerSSH removes them after SSH disconnect in
+connection/session modes, but deliberately retains them in persistent mode. Before uninstalling a
+persistent deployment, decide whether to retain or explicitly delete its user pods and PVCs.

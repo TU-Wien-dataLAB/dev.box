@@ -19,7 +19,7 @@ spec:
   policyTypes:
     - Ingress
     - Egress
-  # Deny all ingress: no other pod can reach session pods.
+  # Deny all ingress: no other pod can reach backend user pods.
   ingress: []
   egress:
     # Allow egress to the public internet only.

@@ -1,7 +1,7 @@
 apiVersion: v2
 name: containerssh
-description: An SSH server that launches on-demand, ephemeral containers (Kubernetes pods) with automatic cleanup
-  and audit logging. This chart deploys ContainerSSH with the Kubernetes backend.
+description: An SSH server for on-demand or persistent Kubernetes pods with audit logging. This chart deploys
+  ContainerSSH with the Kubernetes backend.
 type: application
 
 # This is the chart version. Bump this when you change the chart itself.
@@ -23,5 +23,6 @@ keywords:
   - containers
   - kubernetes
   - ephemeral
+  - persistent
 annotations:
   category: Infrastructure

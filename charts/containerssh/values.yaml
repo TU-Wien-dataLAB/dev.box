@@ -43,7 +43,7 @@ serviceAccount:
   # name: "containerssh"   # override the auto-generated name
   annotations: {}
 
-# RBAC for managing the session pods (Role/RoleBinding in the session namespace).
+# RBAC for managing backend user pods (Role/RoleBinding in their namespace).
 # See the "Securing Kubernetes / Creating a service account" section of the reference.
 rbac:
   enabled: true
@@ -67,7 +67,7 @@ networkPolicy:
     - 169.254.0.0/16
     - 198.18.0.0/15
   # Additional egress peers besides the public internet, e.g. a cluster-internal
-  # service the session pods must reach. Each entry: {to: [...], ports: [...]} rendered
+  # service the backend user pods must reach. Each entry: {to: [...], ports: [...]} rendered
   # as a standard NetworkPolicy egress rule.
   extraEgress: []
   #   - to:
@@ -77,14 +77,16 @@ networkPolicy:
   #       - port: 8080
 
 kubernetes:
-  # Namespace in which per-session SSH pods are created. ContainerSSH runs in the
-  # chart's release namespace, the per-session pods run here (recommended isolation).
+  # Namespace in which backend user pods run. ContainerSSH runs in the chart's
+  # release namespace; ephemeral or persistent user pods run here (recommended isolation).
   sessionNamespace: containerssh-sessions
   # Create the session namespace if it does not exist yet.
   createSessionNamespace: true
 
-  # Execution mode: "connection" (default), "session" or "persistent".
-  # See "Persistent mode" / "Other options" in the reference.
+  # Execution mode: "connection" (chart default), "session" or "persistent".
+  # dev.box intends to use "persistent", but the standard values path does not
+  # yet render the required stable metadata.name or createMissingPods=true.
+  # Do not switch this value alone; see README "Persistent mode (dev.box target)".
   mode: connection
 
   connection:

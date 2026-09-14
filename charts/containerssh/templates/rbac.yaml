@@ -7,7 +7,7 @@ kind: Namespace
 metadata:
   name: {{ $sessionNS }}
   # NOTE: deliberately no pod-security enforce label here — ContainerSSH's
-  # per-session pod spec is user-configurable and an enforced restricted profile
+  # backend user-pod spec is configurable and an enforced restricted profile
   # (which requires seccompProfile: RuntimeDefault) would block default pods. See README.
 {{- end }}
 ---

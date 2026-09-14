@@ -6,7 +6,9 @@ maintainers the context needed to work here safely.
 ## What this is
 
 A personal dev sandbox for running [ContainerSSH](https://containerssh.io) with the **Kubernetes
-backend**: users SSH in and are dropped into ephemeral Kubernetes pods. It consists of:
+backend**. The deployment target is ContainerSSH's **persistent** execution mode: the first SSH
+connection creates a stable per-user pod, later connections exec into that same pod, and
+disconnecting does not delete it. It consists of:
 
 1. **`charts/containerssh/`** — a Helm chart (v2, `containerssh-0.1.1`, `appVersion: 0.6`) that
    deploys ContainerSSH itself plus optional extras.
@@ -25,8 +27,8 @@ Reference docs (both official, version 0.6):
 Source of truth for ContainerSSH internals: `/Users/matthiasmatt/Documents/Work/oss/ContainerSSH`
 (this repo is checked out next to dev.box and is frequently used to verify behavior).
 
-> Repo: `git@github.com:TU-Wien-dataLAB/dev.box.git` (set up, empty). Nothing has been deployed
-> yet — see [Deployment status](#deployment-status).
+> Repo: `git@github.com:TU-Wien-dataLAB/dev.box.git`. No successful deployment exists yet — see
+> [Deployment status](#deployment-status).
 
 ## Layout
 
@@ -44,8 +46,8 @@ dev.box/
 │       ├── ingress-tcp.yaml   (Traefik IngressRouteTCP for SSH — raw TCP, no TLS/cert-manager)
 │       ├── service.yaml
 │       ├── serviceaccount.yaml
-│       ├── rbac.yaml          (Role/RoleBinding for session pods in the session namespace)
-│       ├── networkpolicy.yaml (session pods: no ingress, egress internet-only)
+│       ├── rbac.yaml          (Role/RoleBinding for user pods in the user-pod namespace)
+│       ├── networkpolicy.yaml (user pods: no ingress, egress internet-only)
 │       ├── secret-hostkey.yaml
 │       ├── configserver.yaml  (bundled config server: ConfigMap + Deployment + Service)
 │       ├── authserver.yaml    (bundled auth server: Secret + Deployment + Service; auto-wires auth.*.webhook.url)
@@ -85,15 +87,19 @@ ssh ubuntu@dev.box.example.com
         │ success → authenticated as key owner
         ▼ 2. POST /config (username, ip, connectionId)
    config-server (bundled, auto-wired configserver.url)
-        │ 3. reply: ONE pod template, merged over base config
+        │ 3. reply: ONE pod config, merged over base config
+        │    (target: mode=persistent + stable per-user metadata.name)
         ▼
-   session pod in namespace `containerssh-sessions`
-        (subnet: networkpolicy = no ingress, egress to internet only)
+   persistent user pod in namespace `containerssh-sessions`
+        (reused across connections; networkpolicy = no ingress, egress to internet only)
 ```
 
 - Per SSH **username** → a pod **template** with that name: `ssh ubuntu@…` → `ubuntu.yaml`.
 - Template lookup: `<username>.yaml` → `default.yaml` → (server empty → base pod).
 - The config-server response is **merged over the chart's base config** (see merge rule below).
+- The target lifecycle is one stable pod name per authenticated user. With
+  `mode: persistent` and `createMissingPods: true`, ContainerSSH creates that pod if absent, execs
+  each SSH channel in it, and deliberately leaves it running after disconnect.
 - SSH **key auth** is the auth-server's job: it canonicalizes + fingerprints the presented key and
   queries authentik for the owning user (exact match on `attributes.ssh_key_fingerprint`). Nowhere in
   ContainerSSH, this chart, or the auth server is a password verified against authentik — password
@@ -110,12 +116,13 @@ ssh ubuntu@dev.box.example.com
 | `auth.*.webhook.url` | `""` | external password/pubkey/authz webhook URLs; chart rendering requires password or pubkey unless **auto-wired to the bundled auth-server** |
 | `authServer.enabled` | `false` | deploy the bundled authentik-backed auth server + auto-wire `auth.password/pubkey/authz.webhook.url` |
 | `authServer.authentik.url` / `.token` | `""` | authentik base URL + service token (or `tokenSecret` existing Secret) — **required** when enabled |
-| `kubernetes.sessionNamespace` | `containerssh-sessions` | where per-session pods run (chart force-manages) |
+| `kubernetes.sessionNamespace` | `containerssh-sessions` | where user pods run (chart force-manages) |
+| `kubernetes.mode` | `connection` | chart default; **dev.box target is `persistent`**, not yet fully wired |
 | `kubernetes.pod` | security hard defaults | base/fallback pod config |
 | `kubernetes.podTemplates` | `[]` | named pod templates (name = SSH username); needs `configServer.enabled` |
 | `configServer.enabled` | `false` | deploy the bundled config server + auto-wire `configserver.url` |
 | `configserver.*` | url `""` | client-side config-server connection (timeout/TLS/mTLS) |
-| `networkPolicy.enabled` | `true` | session pods: deny ingress, egress internet-only (+ kube-dns) |
+| `networkPolicy.enabled` | `true` | backend user pods: deny ingress, egress internet-only (+ kube-dns) |
 | `rbac.enabled` | `true` | Role/RoleBinding for pod management in session namespace |
 | `log.level` | `5` | syslog-numbered (7 debug … 2 crit) |
 
@@ -123,9 +130,24 @@ ssh ubuntu@dev.box.example.com
 
 - **Log levels are syslog-numbered, higher = more verbose**: `7` debug, `6` info, `5` notice
   (default), `4` warning, `3` error, `2` crit. Do **not** write "0=trace…5=crit" anywhere.
-- **The chart force-manages `kubernetes.pod.metadata.namespace` and `generateName`** in
-  `configmap.yaml` (= `sessionNamespace`, `containerssh-`). Don't set them in
-  `kubernetes.pod.metadata` — duplicate keys break config loading (strict YAML).
+- **Persistent mode is the deployment target, but is not fully implemented by the chart yet.**
+  ContainerSSH v0.6 persistent mode finds a pod by exact `kubernetes.pod.metadata.name`; a
+  `generateName` is not enough. For on-demand persistent boxes it also needs
+  `kubernetes.pod.createMissingPods: true`. The current chart still defaults to `connection`,
+  force-renders only `generateName`, does not expose `createMissingPods`, and the config server does
+  not inject a deterministic, collision-resistant DNS-1123 pod name from the canonical
+  authenticated identity (`authenticatedUsername`). Do not claim the persistent rollout is ready
+  until those gaps and reconnect tests are addressed.
+- **Persistent means pod lifecycle, not durable storage.** The pod survives SSH disconnects, but its
+  writable layer does not survive pod deletion, eviction, node loss, or recreation. Any data that
+  must survive those events needs a PVC or another durable store. Persistent user pods require an
+  explicit lifecycle/cleanup policy; ContainerSSH intentionally skips pod removal in this mode.
+  Pod-template changes also do not mutate an already-created persistent pod; recreate or migrate the
+  pod explicitly when its image/spec must change.
+- **The chart currently force-manages `kubernetes.pod.metadata.namespace` and `generateName`** in
+  `configmap.yaml` (= `sessionNamespace`, `containerssh-`). Don't set them in the base
+  `kubernetes.pod.metadata` — duplicate keys break config loading (strict YAML). Persistent support
+  must replace/condition this behavior and provide `metadata.name` instead.
 - **The config server / override merge**: ContainerSSH merges the webhook response over the base
   config via `structutils.Merge` = `mergo.Merge(dst, src, mergo.WithOverride)`. Empty/nil source
   fields are **skipped**, so partial per-template overrides are safe (proven by a mergo test); a
@@ -148,7 +170,7 @@ ssh ubuntu@dev.box.example.com
 - **Config file loading applies struct defaults** (`structutils.Defaults` in
   `internal/config/loader_reader.go`) — the chart only renders what it overrides.
 - **`default` is a reserved template name** — it's the catch-all in the config server.
-- **Session pods vs. ContainerSSH pod**: the chart ships security defaults for session pods
+- **User pods vs. ContainerSSH pod**: the chart ships security defaults for backend user pods
   (`runAsNonRoot`, `runAsUser: 1000`, `allowPrivilegeEscalation: false`, cpu/mem limits). The
   NetworkPolicy deliberately has **no pod-security `enforce` label** — a restricted PSS profile
   would block default pods (they lack `seccompProfile: RuntimeDefault`).
@@ -211,15 +233,21 @@ The rendered config is validated this way after every template change that alter
   Docker yet (Docker daemon was off during implementation).
 
 Remaining before the staged cluster validation:
-  1. Enroll a dedicated test user/key in production authentik and ensure its fingerprint attribute is
+  1. Implement the persistent-mode contract in the chart/config server: render
+     `mode: persistent` and `createMissingPods: true`, derive a stable, collision-resistant
+     DNS-1123 `metadata.name` from the canonical authenticated user (`authenticatedUsername`), stop
+     relying on `generateName`, define explicit deletion/retention behavior, and add
+     disconnect/reconnect coverage.
+  2. Enroll a dedicated test user/key in production authentik and ensure its fingerprint attribute is
      present; create a read-only service token in an existing Kubernetes Secret.
-  2. Create or choose a stable SSH host-key Secret.
-  3. Uninstall the current `pending-upgrade` release according to
+  3. Create or choose a stable SSH host-key Secret.
+  4. Uninstall the current `pending-upgrade` release according to
      `tests/cluster-deployment-spec.md`, then clean-install the bundled auth/config servers.
-  4. Optional, later: `ingress.enabled=true` + the one-time Traefik TCP entrypoint/port setup
+  5. Optional, later: `ingress.enabled=true` + the one-time Traefik TCP entrypoint/port setup
      (see values.yaml `ingress`, NOTES.txt).
 
-Typical install command (no ingress):
+Current auth/config smoke-install command (no ingress; still uses the chart's non-target
+`connection` default until item 1 is implemented):
   ```bash
   helm install containerssh charts/containerssh \
     --kube-context container-ssh --namespace containerssh --create-namespace \
