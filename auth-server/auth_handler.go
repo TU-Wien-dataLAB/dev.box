@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"time"
 
 	goHttp "net/http"
 
@@ -107,9 +109,12 @@ func (h *authHandler) OnPubKey(
 		return false, meta.AuthFailed(), nil
 	}
 
+	start := time.Now()
 	user, err := h.authentik.lookupUser(context.Background(), fingerprint, canonicalKey)
+	durationMs := time.Since(start).Milliseconds()
 	if err != nil {
 		h.logger.WithLabel("username", message.LabelValue(meta.Username)).
+			WithLabel("durationMs", message.LabelValue(fmt.Sprint(durationMs))).
 			Error(message.NewMessage(
 				logCodePubKeyError,
 				"Public key authentication failed for %s: authentik lookup error: %v",
@@ -120,6 +125,7 @@ func (h *authHandler) OnPubKey(
 	if user == nil {
 		h.logger.WithLabel("username", message.LabelValue(meta.Username)).
 			WithLabel("fingerprint", message.LabelValue(fingerprint)).
+			WithLabel("durationMs", message.LabelValue(fmt.Sprint(durationMs))).
 			Debug(message.NewMessage(
 				logCodePubKeyDenied,
 				"Public key authentication denied for %s: fingerprint %s is not enrolled in authentik",
@@ -151,6 +157,7 @@ func (h *authHandler) OnPubKey(
 	h.logger.WithLabel("username", message.LabelValue(meta.Username)).
 		WithLabel("owner", message.LabelValue(user.Username)).
 		WithLabel("fingerprint", message.LabelValue(fingerprint)).
+		WithLabel("durationMs", message.LabelValue(fmt.Sprint(durationMs))).
 		Info(message.NewMessage(
 			logCodePubKeySuccess,
 			"Public key authentication succeeded for %s (owner: %s, fingerprint %s)",

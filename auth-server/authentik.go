@@ -259,10 +259,15 @@ func (c *authentikClient) userInGroup(ctx context.Context, username, group strin
 }
 
 // listAllUsers returns every authentik user (all pages), in username order.
+//
+// page_size=1000: authentik's default page size is tiny (observed: 1) and the
+// debug-mode key scan walks ALL pages per auth request — 3.6k users would be
+// ~37 round trips at the default 100/page, blowing ContainerSSH's 10s webhook
+// client timeout. At 1000/page it is ~4 fast requests (~1s).
 func (c *authentikClient) listAllUsers(ctx context.Context) ([]authentikUser, error) {
 	var all []authentikUser
 	u := c.usersURL(url.Values{
-		"page_size": {"100"},
+		"page_size": {"1000"},
 		"ordering":  {"username"},
 	})
 	for u != "" {
@@ -276,7 +281,7 @@ func (c *authentikClient) listAllUsers(ctx context.Context) ([]authentikUser, er
 		}
 		u = c.usersURL(url.Values{
 			"page":      {fmt.Sprintf("%d", page.Pagination.Current+1)},
-			"page_size": {"100"},
+			"page_size": {"1000"},
 			"ordering":  {"username"},
 		})
 	}
