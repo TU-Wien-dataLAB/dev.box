@@ -90,10 +90,10 @@ data:
     {{- $authURL = printf "http://%s-auth-server.%s.svc.cluster.local" (include "containerssh.fullname" .) .Release.Namespace }}
     {{- end }}
     {{- $passwordURL := default $authURL .Values.auth.password.webhook.url }}
-    {{- $pubkeyURL := default $authURL .Values.auth.pubkey.webhook.url }}
+    {{- $publicKeyURL := default $authURL .Values.auth.publicKey.webhook.url }}
     {{- $authzURL := default $authURL .Values.auth.authz.webhook.url }}
-    {{- if not (or $passwordURL $pubkeyURL) }}
-    {{- fail "configure at least one authentication method: enable authServer or set auth.password.webhook.url or auth.pubkey.webhook.url" }}
+    {{- if not (or $passwordURL $publicKeyURL) }}
+    {{- fail "configure at least one authentication method: enable authServer or set auth.password.webhook.url or auth.publicKey.webhook.url" }}
     {{- end }}
     auth:
     {{- if $passwordURL }}
@@ -102,11 +102,11 @@ data:
         webhook:
           url: {{ $passwordURL | quote }}
     {{- end }}
-    {{- if $pubkeyURL }}
-      pubkey:
+    {{- if $publicKeyURL }}
+      publicKey:
         method: webhook
         webhook:
-          url: {{ $pubkeyURL | quote }}
+          url: {{ $publicKeyURL | quote }}
     {{- end }}
     {{- if $authzURL }}
       authz:

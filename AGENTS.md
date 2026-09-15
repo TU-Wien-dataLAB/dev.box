@@ -83,7 +83,7 @@ ssh ubuntu@dev.box.example.com
         │ 1b. POST /pubkey (username, key) → auth-server
         │     (fingerprint key → GET authentik users by attributes.ssh_key_fingerprint)
         ▼
-   auth-server (bundled, auto-wired auth.pubkey.webhook.url)  ⇄  authentik API
+   auth-server (bundled, auto-wired auth.publicKey.webhook.url)  ⇄  authentik API
         │ success → authenticated as key owner
         ▼ 2. POST /config (username, ip, connectionId)
    config-server (bundled, auto-wired configserver.url)
@@ -113,7 +113,7 @@ ssh ubuntu@dev.box.example.com
 | `ssh.port` / `service.*` | `2222` / ClusterIP | SSH listener + exposure (NodePort/LB available) |
 | `ingress.enabled` / `ingress.tcp.*` | `false` / `ssh` | Traefik IngressRouteTCP (raw TCP) fronts the SSH port; **no cert-manager/TLS** — SSH is not HTTP |
 | `ssh.hostKey.existingSecret` / `.privateKey` | `""` | stable host key; else ephemeral key fallback |
-| `auth.*.webhook.url` | `""` | external password/pubkey/authz webhook URLs; chart rendering requires password or pubkey unless **auto-wired to the bundled auth-server** |
+| `auth.*.webhook.url` | `""` | external password/publicKey/authz webhook URLs (v0.6 YAML keys: `password`, `publicKey`, `authz` — NOT `pubkey`); chart rendering requires password or publicKey unless **auto-wired to the bundled auth-server** |
 | `authServer.enabled` | `false` | deploy the bundled authentik-backed auth server + auto-wire `auth.password/pubkey/authz.webhook.url` |
 | `authServer.authentik.url` / `.token` | `""` | authentik base URL + service token (or `tokenSecret` existing Secret) — **required** when enabled |
 | `authServer.authentik.keyAttribute` | `""` | authentik attribute the presented key is looked up by (`sshPublicKey` = raw-key debug mode; default: derived `ssh_key_fingerprint` index) |
@@ -160,6 +160,12 @@ ssh ubuntu@dev.box.example.com
   count. ContainerSSH v0.6 can start with an omitted `auth` block via legacy defaults but has no
   usable webhook authenticator; the chart therefore fails rendering unless `authServer.enabled` or
   a password/public-key webhook URL is set, and never renders `method: webhook` with an empty URL.
+- **`auth.publicKey`, never `auth.pubkey`, in rendered config.yaml**: ContainerSSH v0.6's
+  `AuthConfig` unmarshals `pubkey` as a deprecated `*bool` flag in BOTH its legacy and new YAML
+  structs — a map under `pubkey` aborts config loading (`cannot unmarshal !!map into bool`, caught
+  by the real-binary `--dump-config` check on 2026-09-15; this is what crash-looped the first
+  cluster release). The public-key webhook section must render as `auth.publicKey`; the chart value
+  key is also `auth.publicKey`. `authz` and `password` are plain struct keys.
 - **Auth server is also fail-closed**: with an `auth.*.webhook.url` set, a non-200/error from the
   auth request denies the connection (ContainerSSH retries until the method's `authTimeout`).
   authentik must be reachable from the auth-server pod.
@@ -186,9 +192,9 @@ ssh ubuntu@dev.box.example.com
 
 ```bash
 # chart
-helm lint charts/containerssh --set auth.pubkey.webhook.url=https://auth.example.test
+helm lint charts/containerssh --set auth.publicKey.webhook.url=https://auth.example.test
 helm template smoke charts/containerssh -n containerssh \
-  --set auth.pubkey.webhook.url=https://auth.example.test            # render
+  --set auth.publicKey.webhook.url=https://auth.example.test            # render
 tests/chart-auth-rendering.sh                                        # auth render matrix
 helm package charts/containerssh -d /tmp/sshtest
 

@@ -48,7 +48,7 @@ kubernetes:
 - A Kubernetes cluster and a kube context (the chart assumes the deployment runs *inside* the
   cluster it manages; `kubernetes.connection.host=kubernetes.default.svc` only resolves in-cluster).
 - An authentication server reachable from the cluster. Chart rendering fails unless the bundled
-  `authServer` is enabled or `auth.password.webhook.url` / `auth.pubkey.webhook.url` is set;
+  `authServer` is enabled or `auth.password.webhook.url` / `auth.publicKey.webhook.url` is set;
   authorization alone is not an authentication method. For public-key auth against authentik,
   enable the bundled `authServer` (below).
 
@@ -171,7 +171,7 @@ See `values.yaml` for the complete, annotated list. Highlights:
 | `kubernetes.mode` | `connection` | Chart default; dev.box target is `persistent` after the support gaps above are implemented |
 | `kubernetes.pod.metadata` | `{}` | Pod metadata extended and merged with defaults |
 | `kubernetes.pod.spec` | backend user-container defaults | Full pod spec (image, volumes, resources, nodeName, securityContext…) |
-| `auth.*.webhook.url` | `""` | External auth webhooks; password or pubkey is required unless the bundled auth server is enabled |
+| `auth.*.webhook.url` | `""` | External auth webhooks; password or publicKey is required unless the bundled auth server is enabled. **v0.6 gotcha:** the YAML key is `publicKey` — `auth.pubkey` is a deprecated boolean flag and the real binary rejects a map there (`cannot unmarshal !!map into bool`) |
 | `authServer.enabled` | `false` | Deploy the bundled authentik-backed auth server and wire it |
 | `service.type`, `service.port` | `ClusterIP`, `2222` | SSH service type/port |
 | `ingress.enabled` | `false` | Expose SSH via a Traefik `IngressRouteTCP` (raw TCP) |

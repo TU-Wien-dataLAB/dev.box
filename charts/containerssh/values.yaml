@@ -188,7 +188,10 @@ auth:
     method: webhook
     webhook:
       url: ""   # REQUIRED for password auth: URL of your authentication server
-  pubkey:
+  # NOTE the YAML key: ContainerSSH v0.6 renders this section under
+  # `auth.publicKey` — `auth.pubkey` is the *deprecated* boolean flag and the
+  # real binary REJECTS a map there ("cannot unmarshal !!map into bool").
+  publicKey:
     method: webhook
     webhook:
       url: ""   # SSH public-key auth (authentik-backed via authServer)

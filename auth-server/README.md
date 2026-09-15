@@ -134,7 +134,7 @@ curl -s -X POST http://127.0.0.1:8080/pubkey -H 'Content-Type: application/json'
 
 Enable it from the ContainerSSH chart (`authServer.enabled=true`) — it deploys this server as a
 sibling Deployment + Service, creates a Secret for the authentik token, and auto-wires
-`auth.password.webhook.url`, `auth.pubkey.webhook.url` and `auth.authz.webhook.url` at
+`auth.password.webhook.url`, `auth.publicKey.webhook.url` and `auth.authz.webhook.url` at
 `http://<release>-auth-server.<ns>.svc.cluster.local:8080` (spec §3). See `charts/containerssh/`.
 
 The repo CI (`.github/workflows/auth-server-image.yml`) builds this directory and publishes it to
