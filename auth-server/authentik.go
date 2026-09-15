@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -260,30 +261,68 @@ func (c *authentikClient) userInGroup(ctx context.Context, username, group strin
 
 // listAllUsers returns every authentik user (all pages), in username order.
 //
-// page_size=1000: authentik's default page size is tiny (observed: 1) and the
-// debug-mode key scan walks ALL pages per auth request — 3.6k users would be
-// ~37 round trips at the default 100/page, blowing ContainerSSH's 10s webhook
-// client timeout. At 1000/page it is ~4 fast requests (~1s).
+// Two performance facts drive the design: authentik silently clamps page_size
+// to 100 (a 2026-09-15 measurement against a 3.6k-user directory), and the
+// debug-mode key scan (and the sync) need the FULL directory per pass.
+// Sequential paging of 37+ pages exceeds ContainerSSH's 10s webhook client
+// timeout, so the pages after the first are fetched concurrently (bounded at
+// maxConcurrentUserPages workers). The first page is fetched sequentially to
+// learn the pagination totals.
+const (
+	usersPageSize          = 100
+	maxConcurrentUserPages = 8
+)
+
 func (c *authentikClient) listAllUsers(ctx context.Context) ([]authentikUser, error) {
-	var all []authentikUser
-	u := c.usersURL(url.Values{
-		"page_size": {"1000"},
-		"ordering":  {"username"},
+	first := c.usersURL(url.Values{
+		"page_size":      {fmt.Sprint(usersPageSize)},
+		"include_groups": {"false"},
+		"ordering":       {"username"},
 	})
-	for u != "" {
-		page, err := c.listUsers(ctx, u)
+	page, err := c.listUsers(ctx, first)
+	if err != nil {
+		return nil, err
+	}
+	total := page.Pagination.TotalPages
+	all := make([]authentikUser, 0, page.Pagination.Count)
+	all = append(all, page.Results...)
+	if total <= 1 {
+		return all, nil
+	}
+
+	// Fetch pages 2..total concurrently, bounded by a worker pool.
+	results := make([][]authentikUser, total-1)
+	errs := make([]error, total-1)
+	sem := make(chan struct{}, maxConcurrentUserPages)
+	var wg sync.WaitGroup
+	for p := 2; p <= total; p++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			u := c.usersURL(url.Values{
+				"page":           {fmt.Sprint(n)},
+				"page_size":      {fmt.Sprint(usersPageSize)},
+				"include_groups": {"false"},
+				"ordering":       {"username"},
+			})
+			pg, err := c.listUsers(ctx, u)
+			if err != nil {
+				errs[n-2] = err
+				return
+			}
+			results[n-2] = pg.Results
+		}(p)
+	}
+	wg.Wait()
+	for _, err := range errs {
 		if err != nil {
 			return nil, err
 		}
-		all = append(all, page.Results...)
-		if page.Pagination.Current >= page.Pagination.TotalPages || page.Pagination.TotalPages == 0 {
-			break
-		}
-		u = c.usersURL(url.Values{
-			"page":      {fmt.Sprintf("%d", page.Pagination.Current+1)},
-			"page_size": {"1000"},
-			"ordering":  {"username"},
-		})
+	}
+	for _, r := range results {
+		all = append(all, r...)
 	}
 	return all, nil
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -175,6 +176,34 @@ func (m *mockAuthentik) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			filtered = append(filtered, u)
 		}
+		// Server-side paging, mirroring the DRF/authentik behavior: filters
+		// apply first, then the page is cut from the result set.
+		totalMatches := len(filtered)
+		pageSize := 100
+		if ps := q.Get("page_size"); ps != "" {
+			if n, err := strconv.Atoi(ps); err == nil && n > 0 {
+				pageSize = n
+			}
+		}
+		pageNo := 1
+		if p := q.Get("page"); p != "" {
+			if n, err := strconv.Atoi(p); err == nil && n > 0 {
+				pageNo = n
+			}
+		}
+		totalPages := (len(filtered) + pageSize - 1) / pageSize
+		if totalPages == 0 {
+			totalPages = 1
+		}
+		start := (pageNo - 1) * pageSize
+		if start > len(filtered) {
+			start = len(filtered)
+		}
+		end := start + pageSize
+		if end > len(filtered) {
+			end = len(filtered)
+		}
+		filtered = filtered[start:end]
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(paginatedUsers{
 			Results: filtered,
@@ -182,7 +211,7 @@ func (m *mockAuthentik) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				Count      int `json:"count"`
 				Current    int `json:"current"`
 				TotalPages int `json:"total_pages"`
-			}{Count: len(filtered), Current: 1, TotalPages: 1},
+			}{Count: totalMatches, Current: pageNo, TotalPages: totalPages},
 		})
 		return
 	}
@@ -598,5 +627,48 @@ func TestSyncNormalizesAndDetectsDuplicates(t *testing.T) {
 	}
 	if writes != 0 {
 		t.Fatalf("expected no writes for duplicate fingerprints, wrote %d", writes)
+	}
+}
+
+// ---- concurrent paging over a large directory -------------------------------
+
+func TestListAllUsersConcurrentPaging(t *testing.T) {
+	_, key := newTestKey(t)
+	fp := fingerprintOf(key)
+
+	m := &mockAuthentik{t: t}
+	for i := 1; i <= 370; i++ {
+		m.users = append(m.users, authentikUser{
+			PK: i, UUID: fmt.Sprintf("u%d", i),
+			Username: fmt.Sprintf("user%03d", i), IsActive: true,
+		})
+	}
+	// Target on the last page, key stored freeform (with a comment) so the
+	// exact-match fast path misses and the full-scan fallback must run.
+	target := userWithKey(
+		authentikUser{PK: 9999, UUID: "u9999", Username: "zuser", IsActive: true},
+		strings.TrimSpace(key),
+	)
+	target.Attributes[attrSSHPublicKey] = strings.TrimSpace(key) + " zuser@laptop\n"
+	m.users = append(m.users, target)
+
+	c := newMockClient(t, m)
+	// Force the key-material scan; the stored attribute name is ssh_public_key.
+	c.cfg.KeyAttribute = attrSSHPublicKey
+
+	all, err := c.listAllUsers(context.Background())
+	if err != nil {
+		t.Fatalf("listAllUsers: %v", err)
+	}
+	if len(all) != 371 {
+		t.Fatalf("expected all 371 users across pages, got %d", len(all))
+	}
+
+	user, err := c.lookupUser(context.Background(), fp, strings.TrimSpace(key))
+	if err != nil {
+		t.Fatalf("lookupUser: %v", err)
+	}
+	if user == nil || user.Username != "zuser" {
+		t.Fatalf("expected zuser from the scan, got %+v", user)
 	}
 }
