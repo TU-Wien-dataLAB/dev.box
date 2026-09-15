@@ -76,6 +76,15 @@ type authentikConfig struct {
 	// WriteToken is the API token used by the sync to PATCH users ("edit users").
 	// Empty falls back to ReadToken — which then also needs edit permission.
 	WriteToken string
+	// KeyAttribute selects which authentik user attribute the presented SSH key
+	// is looked up by (AUTH_SERVER_KEY_ATTRIBUTE):
+	//
+	//	"" / "ssh_key_fingerprint" (default) — exact-match filter on the derived
+	//	  fingerprint cache attribute, one cheap API call (spec §4).
+	//	any other value (e.g. "sshPublicKey") — the attribute holds the armored
+	//	  key material itself; lookups try an exact match on the canonical key
+	//	  line and fall back to fingerprint-scanning the stored keys.
+	KeyAttribute string
 	// HTTPClient is the configured HTTP(S) client (custom CA / insecure allowed).
 	HTTPClient *http.Client
 }
@@ -124,6 +133,114 @@ func (c *authentikClient) lookupByFingerprint(
 			"fingerprint %s is bound to %d users (%s, ...): key uniqueness violated",
 			fingerprint, page.Pagination.Count, page.Results[0].Username,
 		)
+	}
+}
+
+// lookupUser finds the (single) authentik user owning the presented SSH key,
+// dispatching on cfg.KeyAttribute (see authentikConfig.KeyAttribute).
+// Returns (nil, nil) when no user owns the key; an error on API trouble or
+// when the key is bound to more than one user (integrity violation).
+func (c *authentikClient) lookupUser(
+	ctx context.Context,
+	fingerprint, canonicalKey string,
+) (*authentikUser, error) {
+	if keyAttr := c.cfg.KeyAttribute; keyAttr != "" && keyAttr != attrSSHKeyFingerprint {
+		return c.lookupByKeyAttribute(ctx, keyAttr, fingerprint, canonicalKey)
+	}
+	return c.lookupByFingerprint(ctx, fingerprint)
+}
+
+// lookupByKeyAttribute finds the user whose attributes.<keyAttribute> holds the
+// presented SSH key. Stored key material is freeform (comments, line breaks),
+// so the exact-match filter on the canonical key line is only a fast path;
+// when it finds nothing the full user list is scanned and every stored key
+// line is canonicalized + fingerprinted for comparison.
+//
+// Note: the fallback walks every user page — fine for small/debug setups.
+// The fingerprint index (default mode) stays the production path.
+func (c *authentikClient) lookupByKeyAttribute(
+	ctx context.Context,
+	keyAttribute, fingerprint, canonicalKey string,
+) (*authentikUser, error) {
+	filter, err := json.Marshal(map[string]string{keyAttribute: canonicalKey})
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode attribute filter: %w", err)
+	}
+	page, err := c.listUsers(ctx, c.usersURL(url.Values{
+		"attributes": {string(filter)},
+	}))
+	if err != nil {
+		return nil, err
+	}
+	switch page.Pagination.Count {
+	case 1:
+		user := page.Results[0]
+		return &user, nil
+	case 0:
+		// Stored form differs from the canonical line — scan below.
+	default:
+		return nil, fmt.Errorf(
+			"key %s is bound to %d users (%s, ...) via attributes.%s: key uniqueness violated",
+			fingerprint, page.Pagination.Count, page.Results[0].Username, keyAttribute,
+		)
+	}
+
+	users, err := c.listAllUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var matches []*authentikUser
+	for i := range users {
+		user := &users[i]
+		for _, line := range attributeKeyLines(user.Attributes[keyAttribute]) {
+			stored, err := fingerprintFromAuthorizedKey(line)
+			if err != nil {
+				continue // not a (valid) key line
+			}
+			if stored == fingerprint {
+				matches = append(matches, user)
+				break
+			}
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return nil, nil
+	case 1:
+		return matches[0], nil
+	default:
+		return nil, fmt.Errorf(
+			"key %s is bound to %d users (%s, ...) via attributes.%s: key uniqueness violated",
+			fingerprint, len(matches), matches[0].Username, keyAttribute,
+		)
+	}
+}
+
+// attributeKeyLines normalizes an attribute value that may hold key material —
+// a single string (possibly multi-line) or a JSON list of strings — into
+// individual authorized_keys lines.
+func attributeKeyLines(value interface{}) []string {
+	switch v := value.(type) {
+	case string:
+		lines := strings.Split(v, "\n")
+		for i := range lines {
+			lines[i] = strings.TrimSpace(lines[i])
+		}
+		return lines
+	case []interface{}:
+		var lines []string
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				for _, part := range strings.Split(s, "\n") {
+					if line := strings.TrimSpace(part); line != "" {
+						lines = append(lines, line)
+					}
+				}
+			}
+		}
+		return lines
+	default:
+		return nil
 	}
 }
 

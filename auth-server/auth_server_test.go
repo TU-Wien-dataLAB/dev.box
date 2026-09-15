@@ -136,8 +136,17 @@ func (m *mockAuthentik) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if err := json.Unmarshal([]byte(ss[0]), &filter); err != nil {
 					m.t.Errorf("bad attributes filter %q: %v", ss[0], err)
 				}
-				fp, _ := u.Attributes[attrSSHKeyFingerprint].(string)
-				if fp != filter[attrSSHKeyFingerprint] {
+				// authentik semantics: exact scalar match on every listed
+				// key/value pair of the user's attributes object.
+				mismatch := false
+				for k, v := range filter {
+					stored, _ := u.Attributes[k].(string)
+					if stored != v {
+						mismatch = true
+						break
+					}
+				}
+				if mismatch {
 					continue
 				}
 			}
@@ -228,7 +237,7 @@ func TestLookupByFingerprint(t *testing.T) {
 	t.Run("no user owns the key", func(t *testing.T) {
 		m := &mockAuthentik{t: t, users: []authentikUser{}}
 		c := newMockClient(t, m)
-		user, err := c.lookupByFingerprint(context.Background(), fingerprintOf(aliceKey))
+		user, err := c.lookupUser(context.Background(), fingerprintOf(aliceKey), "")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -242,7 +251,7 @@ func TestLookupByFingerprint(t *testing.T) {
 			userWithKey(authentikUser{PK: 1, UUID: "u1", Username: "alice", IsActive: true}, aliceKey),
 		}}
 		c := newMockClient(t, m)
-		user, err := c.lookupByFingerprint(context.Background(), fingerprintOf(aliceKey))
+		user, err := c.lookupUser(context.Background(), fingerprintOf(aliceKey), "")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -257,7 +266,7 @@ func TestLookupByFingerprint(t *testing.T) {
 			userWithKey(authentikUser{PK: 2, UUID: "u2", Username: "mallory", IsActive: true}, aliceKey),
 		}}
 		c := newMockClient(t, m)
-		if _, err := c.lookupByFingerprint(context.Background(), fingerprintOf(aliceKey)); err == nil {
+		if _, err := c.lookupUser(context.Background(), fingerprintOf(aliceKey), ""); err == nil {
 			t.Fatal("expected integrity error for duplicate fingerprint")
 		}
 	})
@@ -265,7 +274,109 @@ func TestLookupByFingerprint(t *testing.T) {
 	t.Run("api failure is surfaced", func(t *testing.T) {
 		m := &mockAuthentik{t: t, statusCode: 500}
 		c := newMockClient(t, m)
-		if _, err := c.lookupByFingerprint(context.Background(), fingerprintOf(bobKey)); err == nil {
+		if _, err := c.lookupUser(context.Background(), fingerprintOf(bobKey), ""); err == nil {
+			t.Fatal("expected error for API failure")
+		}
+	})
+}
+
+// ---- key-attribute lookup mode (AUTH_SERVER_KEY_ATTRIBUTE) ------------------
+
+func TestLookupByKeyAttribute(t *testing.T) {
+	_, aliceKey := newTestKey(t)
+	_, bobKey := newTestKey(t)
+	fp := fingerprintOf(aliceKey)
+	canonical := strings.TrimSpace(aliceKey)
+
+	userWithRawKey := func(u authentikUser, key string) authentikUser {
+		if u.Attributes == nil {
+			u.Attributes = map[string]interface{}{}
+		}
+		u.Attributes["sshPublicKey"] = key
+		return u
+	}
+	clientWithKeyAttr := func(t *testing.T, m *mockAuthentik) *authentikClient {
+		c := newMockClient(t, m)
+		c.cfg.KeyAttribute = "sshPublicKey"
+		return c
+	}
+
+	t.Run("exact-match fast path on the canonical key", func(t *testing.T) {
+		m := &mockAuthentik{t: t, users: []authentikUser{
+			userWithRawKey(authentikUser{PK: 1, UUID: "u1", Username: "alice", IsActive: true}, canonical),
+		}}
+		c := clientWithKeyAttr(t, m)
+		user, err := c.lookupUser(context.Background(), fp, canonical)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if user == nil || user.Username != "alice" {
+			t.Fatalf("expected alice, got %+v", user)
+		}
+	})
+
+	t.Run("scan fallback matches freeform key line with comment", func(t *testing.T) {
+		m := &mockAuthentik{t: t, users: []authentikUser{
+			userWithRawKey(authentikUser{PK: 1, UUID: "u1", Username: "alice", IsActive: true},
+				aliceKey+" alice@laptop\n"),
+		}}
+		c := clientWithKeyAttr(t, m)
+		user, err := c.lookupUser(context.Background(), fp, canonical)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if user == nil || user.Username != "alice" {
+			t.Fatalf("expected alice, got %+v", user)
+		}
+	})
+
+	t.Run("scan fallback handles multi-key list values", func(t *testing.T) {
+		m := &mockAuthentik{t: t, users: []authentikUser{
+			userWithRawKey(authentikUser{PK: 1, UUID: "u1", Username: "alice", IsActive: true}, bobKey),
+		}}
+		m.mu.Lock()
+		m.users[0].Attributes["sshPublicKey"] = []interface{}{
+			bobKey + " old-key\n",
+			aliceKey + " current-key\n",
+		}
+		m.mu.Unlock()
+		c := clientWithKeyAttr(t, m)
+		user, err := c.lookupUser(context.Background(), fp, canonical)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if user == nil || user.Username != "alice" {
+			t.Fatalf("expected alice, got %+v", user)
+		}
+	})
+
+	t.Run("no user owns the key", func(t *testing.T) {
+		m := &mockAuthentik{t: t, users: []authentikUser{}}
+		c := clientWithKeyAttr(t, m)
+		user, err := c.lookupUser(context.Background(), fp, canonical)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if user != nil {
+			t.Fatalf("expected no user, got %+v", user)
+		}
+	})
+
+	t.Run("duplicate key across users is an integrity error", func(t *testing.T) {
+		m := &mockAuthentik{t: t, users: []authentikUser{
+			userWithRawKey(authentikUser{PK: 1, UUID: "u1", Username: "alice", IsActive: true}, aliceKey),
+			userWithRawKey(authentikUser{PK: 2, UUID: "u2", Username: "mallory", IsActive: true}, aliceKey),
+		}}
+		c := clientWithKeyAttr(t, m)
+		if _, err := c.lookupUser(context.Background(), fp, canonical); err == nil {
+			t.Fatal("expected integrity error for duplicate key")
+		}
+	})
+
+	t.Run("api failure is surfaced", func(t *testing.T) {
+		m := &mockAuthentik{t: t, statusCode: 500}
+		c := clientWithKeyAttr(t, m)
+		if _, err := c.lookupUser(context.Background(), fp, canonical); err == nil {
 			t.Fatal("expected error for API failure")
 		}
 	})
@@ -354,6 +465,37 @@ func TestOnPubKey(t *testing.T) {
 			t.Fatalf("expected denied for inactive user, got ok=%v err=%v", ok, err)
 		}
 	})
+}
+
+// ---- OnPubKey with the key-attribute lookup mode ----------------------------
+
+func TestOnPubKeyWithKeyAttribute(t *testing.T) {
+	_, aliceKey := newTestKey(t)
+
+	// Alice stores her key freeform (with comment) under attributes.sshPublicKey.
+	m := &mockAuthentik{t: t, users: []authentikUser{func() authentikUser {
+		u := authentikUser{PK: 1, UUID: "u1", Username: "alice", IsActive: true}
+		u.Attributes = map[string]interface{}{"sshPublicKey": aliceKey + " alice@laptop\n"}
+		return u
+	}()}}
+	c := newMockClient(t, m)
+	c.cfg.KeyAttribute = "sshPublicKey"
+	h := &authHandler{
+		authentik: c,
+		cfg:       authConfig{EnforceUsername: true, PasswordUsers: map[string]struct{}{}},
+		logger:    testLogger(t),
+	}
+
+	ok, meta, err := h.OnPubKey(
+		metadata.NewTestAuthenticatingMetadata("alice"),
+		auth.PublicKey{PublicKey: aliceKey},
+	)
+	if err != nil || !ok {
+		t.Fatalf("expected success via attributes.sshPublicKey, got ok=%v err=%v", ok, err)
+	}
+	if meta.AuthenticatedUsername != "alice" {
+		t.Fatalf("expected authenticated as alice, got %q", meta.AuthenticatedUsername)
+	}
 }
 
 // ---- OnAuthorization ---------------------------------------------------------

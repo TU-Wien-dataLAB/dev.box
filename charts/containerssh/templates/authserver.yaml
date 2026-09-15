@@ -112,6 +112,10 @@ spec:
             - name: AUTHENTIK_INSECURE_SKIP_VERIFY
               value: "true"
             {{- end }}
+            {{- with .Values.authServer.authentik.keyAttribute }}
+            - name: AUTH_SERVER_KEY_ATTRIBUTE
+              value: {{ . | quote }}
+            {{- end }}
           readinessProbe:
             tcpSocket:
               port: http

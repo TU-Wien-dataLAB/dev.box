@@ -281,6 +281,13 @@ authServer:
     writeTokenSecretKey: "token"
     # AUTHENTIK_INSECURE_SKIP_VERIFY — dev only.
     insecureSkipVerify: false
+    # AUTH_SERVER_KEY_ATTRIBUTE: which authentik user attribute the presented
+    # SSH key is looked up by. Empty = the derived fingerprint cache
+    # attributes.ssh_key_fingerprint (spec default: one exact-match API call).
+    # Set to e.g. "sshPublicKey" to match the raw armored key stored on users
+    # (debug/compat mode: exact-match attempt on the canonical key, then a full
+    # user scan comparing fingerprints — see auth-server/README.md).
+    keyAttribute: ""
   # AUTH_SERVER_ENFORCE_USERNAME: require ssh <user>@host to equal the authentik
   # owner of the key (prevents impersonation).
   enforceUsername: true

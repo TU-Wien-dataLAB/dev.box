@@ -43,9 +43,23 @@ ssh alice@host ──present key──▶ ContainerSSH ──POST /pubkey──�
 5. Infrastructure errors (5xx/network) → error → HTTP 500; ContainerSSH keeps retrying until
    its per-method `authTimeout`.
 
-The attribute is `ssh_key_fingerprint`; the raw key lives in `ssh_public_key` (set by the user via
+The default attribute is `ssh_key_fingerprint`; the raw key lives in `ssh_public_key` (set by the user via
 the authentik settings-flow prompt, or by a provisioner — see spec §5). Both are **derived caches**:
 users keep entering keys, and the background sync (below) keeps the fingerprint in sync.
+
+### Alternative lookup attribute (`AUTH_SERVER_KEY_ATTRIBUTE`)
+
+The lookup attribute is configurable, which helps when your authentik users keep their keys in a
+different attribute — e.g. the raw `sshPublicKey`:
+
+- unset / `ssh_key_fingerprint` (default): exact-match filter on the derived fingerprint cache —
+  one cheap API call. The production path.
+- any other value (e.g. `sshPublicKey`): the attribute holds the armored key material. The server
+  first tries an exact-match filter with the canonical key line, then falls back to scanning every
+  user and fingerprint-comparing each stored key line (handles comments, line breaks, and
+  multi-key list values). Integrity rules are identical: a key bound to more than one user is a
+  500, not an accidental allow. Note the fallback walks every user page — fine for small/debug
+  setups; prefer the fingerprint index in production.
 
 ## Environment
 
@@ -64,6 +78,7 @@ users keep entering keys, and the background sync (below) keeps the fingerprint 
 | `AUTH_SERVER_ENFORCE_USERNAME` | `true` | require `ssh <user>@host` to equal the authentik **owner** of the key (prevents impersonation with a stolen key + known username) |
 | `AUTH_SERVER_PASSWORD_USERS` | — | comma-separated usernames allowed to use password auth (any password — **test/break-glass only, not verified**) |
 | `AUTH_SERVER_REQUIRE_GROUP` | — | group name; when set, `OnAuthorization` demands membership before session starts |
+| `AUTH_SERVER_KEY_ATTRIBUTE` | `ssh_key_fingerprint` | authentik attribute the presented key is looked up by; set e.g. `sshPublicKey` to match raw key material (see above) |
 | `AUTH_SERVER_SYNC_INTERVAL` | — (off) | normalizing sync interval, e.g. `30s`, `5m` (spec §5.3 option (a)) |
 | `AUTH_SERVER_SYNC_WRITE` | `true` | `false` runs the sync in dry-run (report only, no PATCHes) |
 

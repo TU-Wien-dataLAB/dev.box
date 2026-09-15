@@ -79,11 +79,14 @@ func (h *authHandler) OnPassword(
 	return true, meta.Authenticated(meta.Username), nil
 }
 
-// OnPubKey authenticates an SSH public key by looking its canonical SHA256
-// fingerprint up in authentik (spec §4):
+// OnPubKey authenticates an SSH public key by looking it up in authentik (spec
+// §4). The lookup attribute is configurable (AUTH_SERVER_KEY_ATTRIBUTE):
 //
 //  1. canonicalize   ssh.ParseAuthorizedKey + ssh.FingerprintSHA256
-//  2. lookup         GET /api/v3/core/users/?attributes={"ssh_key_fingerprint":"SHA256:..."}
+//  2. lookup         by attributes.<keyAttribute>:
+//     ssh_key_fingerprint (default) → exact "SHA256:..." filter;
+//     e.g. sshPublicKey → exact canonical-key filter, then a
+//     fingerprint scan of the stored keys
 //  3. decide         0 users -> deny; exactly 1 -> verify username binding;
 //     >1 -> integrity error (server-side, 500)
 //  4. infra errors   -> return err so ContainerSSH replies 500 and retries
@@ -91,7 +94,7 @@ func (h *authHandler) OnPubKey(
 	meta metadata.ConnectionAuthPendingMetadata,
 	publicKey auth.PublicKey,
 ) (bool, metadata.ConnectionAuthenticatedMetadata, error) {
-	fingerprint, err := fingerprintFromAuthorizedKey(publicKey.PublicKey)
+	fingerprint, canonicalKey, err := fingerprintAndCanonicalKey(publicKey.PublicKey)
 	if err != nil {
 		// Malformed key blob — a client/UI problem, not an infrastructure one:
 		// deny cleanly without a 500.
@@ -104,7 +107,7 @@ func (h *authHandler) OnPubKey(
 		return false, meta.AuthFailed(), nil
 	}
 
-	user, err := h.authentik.lookupByFingerprint(context.Background(), fingerprint)
+	user, err := h.authentik.lookupUser(context.Background(), fingerprint, canonicalKey)
 	if err != nil {
 		h.logger.WithLabel("username", message.LabelValue(meta.Username)).
 			Error(message.NewMessage(

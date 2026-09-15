@@ -60,6 +60,7 @@ const (
 	envRequireGroup  = "AUTH_SERVER_REQUIRE_GROUP"
 	envSyncInterval  = "AUTH_SERVER_SYNC_INTERVAL"
 	envSyncWrite     = "AUTH_SERVER_SYNC_WRITE"
+	envKeyAttribute  = "AUTH_SERVER_KEY_ATTRIBUTE"
 )
 
 func main() {
@@ -97,11 +98,17 @@ func main() {
 	}
 
 	authentikClient := &authentikClient{cfg: authentikConfig{
-		BaseURL:    authenticURL,
-		ReadToken:  readToken,
-		WriteToken: writeToken,
-		HTTPClient: httpClient,
+		BaseURL:      authenticURL,
+		ReadToken:    readToken,
+		WriteToken:   writeToken,
+		KeyAttribute: env(envKeyAttribute, ""),
+		HTTPClient:   httpClient,
 	}}
+	logger.Info(message.NewMessage(
+		"AUTH_DEV_KEY_LOOKUP",
+		"SSH key lookup mode: %s",
+		lookupModeDescription(env(envKeyAttribute, "")),
+	))
 	// ---- auth behaviour ---------------------------------------------------
 	authCfg := authConfig{
 		EnforceUsername: envBoolDefault(envEnforceUser, true),
@@ -225,6 +232,15 @@ func secretFromEnv(file, direct string, logger log.Logger) (string, error) {
 		return strings.TrimSpace(string(data)), nil
 	}
 	return env(direct, ""), nil
+}
+
+// lookupModeDescription describes (for the startup log) which authentik user
+// attribute the presented SSH key will be looked up by.
+func lookupModeDescription(keyAttribute string) string {
+	if keyAttribute == "" || keyAttribute == attrSSHKeyFingerprint {
+		return "fingerprint index on attributes." + attrSSHKeyFingerprint
+	}
+	return fmt.Sprintf("key material on attributes.%s (exact match, scan fallback)", keyAttribute)
 }
 
 // parsePasswordUsers splits the comma-separated allowlist into a set.

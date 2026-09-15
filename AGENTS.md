@@ -116,6 +116,7 @@ ssh ubuntu@dev.box.example.com
 | `auth.*.webhook.url` | `""` | external password/pubkey/authz webhook URLs; chart rendering requires password or pubkey unless **auto-wired to the bundled auth-server** |
 | `authServer.enabled` | `false` | deploy the bundled authentik-backed auth server + auto-wire `auth.password/pubkey/authz.webhook.url` |
 | `authServer.authentik.url` / `.token` | `""` | authentik base URL + service token (or `tokenSecret` existing Secret) — **required** when enabled |
+| `authServer.authentik.keyAttribute` | `""` | authentik attribute the presented key is looked up by (`sshPublicKey` = raw-key debug mode; default: derived `ssh_key_fingerprint` index) |
 | `kubernetes.sessionNamespace` | `containerssh-sessions` | where user pods run (chart force-manages) |
 | `kubernetes.mode` | `connection` | chart default; **dev.box target is `persistent`**, not yet fully wired |
 | `kubernetes.pod` | security hard defaults | base/fallback pod config |

@@ -188,6 +188,7 @@ See `values.yaml` for the complete, annotated list. Highlights:
 | `authServer.authentik.url` | `""` | authentik base URL (required when `authServer.enabled`) |
 | `authServer.authentik.token` | `""` | authentik service token (chart creates a Secret) |
 | `authServer.authentik.tokenSecret` | `""` | existing Secret with the token (preferred over `token`) |
+| `authServer.authentik.keyAttribute` | `""` | authentik attribute the presented key is looked up by; set `sshPublicKey` to match raw key material (debug/compat; default: derived `ssh_key_fingerprint` index) |
 | `authServer.syncInterval` | `""` | normalizing+fingerprint sync interval, e.g. `5m` |
 
 ## Per-username pod templates
