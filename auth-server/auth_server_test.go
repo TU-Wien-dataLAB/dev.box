@@ -133,16 +133,17 @@ func (m *mockAuthentik) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		filtered := []authentikUser{}
 		for _, u := range m.users {
 			if ss, ok := q["attributes"]; ok && len(ss) > 0 {
-				var filter map[string]string
+				// authentik semantics: the attribute value must equal the
+				// filter value as JSON (scalar vs scalar, list vs list).
+				var filter map[string]interface{}
 				if err := json.Unmarshal([]byte(ss[0]), &filter); err != nil {
 					m.t.Errorf("bad attributes filter %q: %v", ss[0], err)
 				}
-				// authentik semantics: exact scalar match on every listed
-				// key/value pair of the user's attributes object.
 				mismatch := false
 				for k, v := range filter {
-					stored, _ := u.Attributes[k].(string)
-					if stored != v {
+					storedJSON, _ := json.Marshal(u.Attributes[k])
+					filterJSON, _ := json.Marshal(v)
+					if string(storedJSON) != string(filterJSON) {
 						mismatch = true
 						break
 					}
@@ -671,4 +672,54 @@ func TestListAllUsersConcurrentPaging(t *testing.T) {
 	if user == nil || user.Username != "zuser" {
 		t.Fatalf("expected zuser from the scan, got %+v", user)
 	}
+}
+
+// ---- attribute filter semantics (scalar vs list storage) --------------------
+
+func TestLookupByKeyAttributeListStorage(t *testing.T) {
+	_, key := newTestKey(t)
+	fp := fingerprintOf(key)
+	canonical := strings.TrimSpace(key)
+
+	// Stored exactly as a single-element list of the canonical key: the
+	// list-wrapped probe must hit without any scan.
+	t.Run("list-stored canonical key matches the list probe", func(t *testing.T) {
+		m := &mockAuthentik{t: t, users: []authentikUser{func() authentikUser {
+			u := authentikUser{PK: 1, UUID: "u1", Username: "alice", IsActive: true}
+			u.Attributes = map[string]interface{}{
+				"sshPublicKey": []interface{}{canonical},
+			}
+			return u
+		}()}}
+		c := newMockClient(t, m)
+		c.cfg.KeyAttribute = "sshPublicKey"
+		user, err := c.lookupUser(context.Background(), fp, canonical)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if user == nil || user.Username != "alice" {
+			t.Fatalf("expected alice, got %+v", user)
+		}
+	})
+
+	// A list-stored key with a comment can never equal the canonical query:
+	// both probes miss and the scan finds the user by fingerprint.
+	t.Run("list-stored freeform key falls back to the scan", func(t *testing.T) {
+		m := &mockAuthentik{t: t, users: []authentikUser{func() authentikUser {
+			u := authentikUser{PK: 1, UUID: "u1", Username: "alice", IsActive: true}
+			u.Attributes = map[string]interface{}{
+				"sshPublicKey": []interface{}{canonical + " alice@laptop"},
+			}
+			return u
+		}()}}
+		c := newMockClient(t, m)
+		c.cfg.KeyAttribute = "sshPublicKey"
+		user, err := c.lookupUser(context.Background(), fp, canonical)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if user == nil || user.Username != "alice" {
+			t.Fatalf("expected alice via scan, got %+v", user)
+		}
+	})
 }

@@ -152,38 +152,49 @@ func (c *authentikClient) lookupUser(
 }
 
 // lookupByKeyAttribute finds the user whose attributes.<keyAttribute> holds the
-// presented SSH key. Stored key material is freeform (comments, line breaks),
-// so the exact-match filter on the canonical key line is only a fast path;
-// when it finds nothing the full user list is scanned and every stored key
-// line is canonicalized + fingerprinted for comparison.
+// presented SSH key.
 //
-// Note: the fallback walks every user page — fine for small/debug setups.
-// The fingerprint index (default mode) stays the production path.
+// authentik's `attributes` filter matches the attribute value as JSON with
+// exact equality (verified against authentik 2026.5.2: a scalar query misses a
+// list-stored attribute, and a list query must equal the whole list — no
+// membership/partial matching). Stored key material is freeform (comments,
+// line breaks, list wrapping), so two cheap exact probes run first — scalar
+// and list-wrapped canonical key — and only when both find nothing does the
+// full user scan run, fingerprint-comparing every stored key line.
+//
+// Note: the fallback walks every user page. Fast storage = canonical key,
+// scalar or single-element list. The fingerprint index (default mode) stays
+// the production path.
 func (c *authentikClient) lookupByKeyAttribute(
 	ctx context.Context,
 	keyAttribute, fingerprint, canonicalKey string,
 ) (*authentikUser, error) {
-	filter, err := json.Marshal(map[string]string{keyAttribute: canonicalKey})
-	if err != nil {
-		return nil, fmt.Errorf("failed to encode attribute filter: %w", err)
-	}
-	page, err := c.listUsers(ctx, c.usersURL(url.Values{
-		"attributes": {string(filter)},
-	}))
-	if err != nil {
-		return nil, err
-	}
-	switch page.Pagination.Count {
-	case 1:
-		user := page.Results[0]
-		return &user, nil
-	case 0:
-		// Stored form differs from the canonical line — scan below.
-	default:
-		return nil, fmt.Errorf(
-			"key %s is bound to %d users (%s, ...) via attributes.%s: key uniqueness violated",
-			fingerprint, page.Pagination.Count, page.Results[0].Username, keyAttribute,
-		)
+	for _, value := range []interface{}{
+		canonicalKey,
+		[]interface{}{canonicalKey},
+	} {
+		filter, err := json.Marshal(map[string]interface{}{keyAttribute: value})
+		if err != nil {
+			return nil, fmt.Errorf("failed to encode attribute filter: %w", err)
+		}
+		page, err := c.listUsers(ctx, c.usersURL(url.Values{
+			"attributes": {string(filter)},
+		}))
+		if err != nil {
+			return nil, err
+		}
+		switch page.Pagination.Count {
+		case 1:
+			user := page.Results[0]
+			return &user, nil
+		case 0:
+			// Try the next probe, then the scan below.
+		default:
+			return nil, fmt.Errorf(
+				"key %s is bound to %d users (%s, ...) via attributes.%s: key uniqueness violated",
+				fingerprint, page.Pagination.Count, page.Results[0].Username, keyAttribute,
+			)
+		}
 	}
 
 	users, err := c.listAllUsers(ctx)

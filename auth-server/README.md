@@ -55,11 +55,17 @@ different attribute — e.g. the raw `sshPublicKey`:
 - unset / `ssh_key_fingerprint` (default): exact-match filter on the derived fingerprint cache —
   one cheap API call. The production path.
 - any other value (e.g. `sshPublicKey`): the attribute holds the armored key material. The server
-  first tries an exact-match filter with the canonical key line, then falls back to scanning every
-  user and fingerprint-comparing each stored key line (handles comments, line breaks, and
-  multi-key list values). Integrity rules are identical: a key bound to more than one user is a
-  500, not an accidental allow. Note the fallback walks every user page — fine for small/debug
-  setups; prefer the fingerprint index in production.
+  first probes the exact-match `attributes` filter with the canonical key — scalar, then
+  list-wrapped (authentik matches the attribute value as JSON with exact equality; a list-stored
+  attribute only matches an exactly-equal list query) — and falls back to scanning every user and
+  fingerprint-comparing each stored key line (handles comments, line breaks, and multi-key list
+  values). Integrity rules are identical: a key bound to more than one user is a 500, not an
+  accidental allow. Note the fallback walks every user page — for large directories store the
+  **canonical key without comment** (scalar, or a single-element list) so the exact probe hits, or
+  use the fingerprint index.
+- The authentik users API has no per-attribute query parameter (e.g. `?sshPublicKey=…`): unknown
+  query params are silently ignored and return the full directory. The documented filter is the
+  JSON `attributes` parameter (verified against authentik 2026.5.2).
 
 ## Environment
 
