@@ -57,15 +57,15 @@ assert_config() {
       abort "wrong pubkey URL" unless auth.dig("publicKey", "webhook", "url") == "https://pubkey.example.test"
       abort "wrong authz URL" unless auth.dig("authz", "webhook", "url") == "https://authz.example.test"
     when "bundled"
-      abort "wrong auth methods: #{auth.keys.inspect}" unless auth.keys.sort == ["authz", "publicKey"]
+      abort "wrong auth methods: #{auth.keys.inspect}" unless auth.keys == ["publicKey"]
       auth.each_value do |method|
         abort "wrong bundled URL" unless method.dig("webhook", "url") == bundled
       end
       abort "wrong bundled config URL" unless config.dig("configserver", "url") == bundled_config
     when "mixed"
+      abort "wrong auth methods: #{auth.keys.inspect}" unless auth.keys.sort == ["password", "publicKey"]
       abort "wrong password override" unless auth.dig("password", "webhook", "url") == "https://password.example.test"
       abort "wrong bundled pubkey URL" unless auth.dig("publicKey", "webhook", "url") == bundled
-      abort "wrong bundled authz URL" unless auth.dig("authz", "webhook", "url") == bundled
     else
       abort "unknown scenario #{scenario}"
     end

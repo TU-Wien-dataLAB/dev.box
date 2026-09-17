@@ -109,9 +109,8 @@ The same listener exposes the protocol-complete endpoints:
 | --- | --- |
 | `POST /password` | always deny; present only to satisfy the handler interface |
 | `POST /pubkey` | public-key flow above |
-| `POST /authz` | allow, or apply the configured authentik group gate |
-| `POST /config` | return an empty override so ContainerSSH keeps its base config |
-| other path or method | `404` or `405` |
+| `POST /authz` | always allow; present only to satisfy the handler interface |
+| other path | `404` |
 
 ## Configuration
 
@@ -121,5 +120,6 @@ Required:
 - `AUTHENTIK_TOKEN` or `AUTHENTIK_TOKEN_FILE`
 
 There is intentionally no configurable key attribute, username-binding mode, password allowlist,
-write token, synchronization interval, fingerprint mode, or custom-CA setting. The single
+group gate, write token, synchronization interval, fingerprint mode, custom-CA setting, or
+server-side TLS/mTLS configuration. The single
 `attributes.sshPublicKey` contract keeps the login path deterministic.

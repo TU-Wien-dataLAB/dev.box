@@ -21,28 +21,17 @@ const (
 	authentikRestAPIV3 = "/api/v3/core/users/"
 )
 
-// authentikUser is the subset of authentik's User serializer used by the auth
-// and authorization handlers. Extra fields support the in-memory API tests.
+// authentikUser is the subset of authentik's User serializer needed to decide
+// public-key authentication. Attributes are retained for the in-memory API test.
 type authentikUser struct {
-	PK         int                    `json:"pk"`
-	UUID       string                 `json:"uuid"`
 	Username   string                 `json:"username"`
-	Name       string                 `json:"name"`
 	IsActive   bool                   `json:"is_active"`
 	Attributes map[string]interface{} `json:"attributes"`
-	Groups     []authentikGroup       `json:"groups_obj"`
-}
-
-type authentikGroup struct {
-	PK   string `json:"pk"`
-	Name string `json:"name"`
 }
 
 type paginatedUsers struct {
 	Pagination struct {
-		Count      int `json:"count"`
-		Current    int `json:"current"`
-		TotalPages int `json:"total_pages"`
+		Count int `json:"count"`
 	} `json:"pagination"`
 	Results []authentikUser `json:"results"`
 }
@@ -81,18 +70,6 @@ func (c *authentikClient) lookupUser(
 		return nil, nil
 	}
 	return &page.Results[0], nil
-}
-
-// userInGroup reports whether the exact username belongs to the named group.
-func (c *authentikClient) userInGroup(ctx context.Context, username, group string) (bool, error) {
-	page, err := c.listUsers(ctx, url.Values{
-		"username":       {username},
-		"groups_by_name": {group},
-	})
-	if err != nil {
-		return false, err
-	}
-	return page.Pagination.Count > 0, nil
 }
 
 func (c *authentikClient) listUsers(ctx context.Context, values url.Values) (*paginatedUsers, error) {

@@ -75,10 +75,6 @@ spec:
               value: {{ required "authServer.authentik.url is required when authServer.enabled" .Values.authServer.authentik.url | quote }}
             - name: AUTHENTIK_TOKEN_FILE
               value: /var/run/secrets/dev.box/token
-            {{- with .Values.authServer.requireGroup }}
-            - name: AUTH_SERVER_REQUIRE_GROUP
-              value: {{ . | quote }}
-            {{- end }}
             {{- if .Values.authServer.authentik.insecureSkipVerify }}
             - name: AUTHENTIK_INSECURE_SKIP_VERIFY
               value: "true"

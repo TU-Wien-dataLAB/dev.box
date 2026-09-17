@@ -1,17 +1,11 @@
-// Command auth-server is a ContainerSSH authentication (and configuration)
-// server backed by an authentik [1] instance for SSH public-key lookups.
+// Command auth-server is a ContainerSSH authentication server backed by an
+// authentik [1] instance for SSH public-key lookups.
 //
-// It implements the ContainerSSH auth webhook protocol by building on the
-// official module (go.containerssh.io/containerssh, auth/webhook and
-// config/webhook packages) — the same API as
-// cmd/containerssh-testauthconfigserver in the ContainerSSH repo.
+// It implements the ContainerSSH auth webhook protocol with the official
+// go.containerssh.io/containerssh/auth/webhook package.
 //
-// The server exposes four endpoints on one listener (spec §2/§6):
-//
-//	POST /password   username/password authentication (disabled by default)
-//	POST /pubkey     SSH public key authentication — the authentik lookup
-//	POST /authz      post-auth authorization (optional group gate)
-//	POST /config     empty per-connection config (base config unchanged)
+// The required interface exposes /password, /pubkey, and /authz. Only
+// /pubkey can authenticate; password always denies and authorization allows.
 //
 // The authentik side lives in authentik.go (API client) and auth_handler.go
 // (the handler). The server performs one exact authentik users query for the
@@ -31,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	authWebhook "go.containerssh.io/containerssh/auth/webhook"
 	"go.containerssh.io/containerssh/config"
 	containersshHTTP "go.containerssh.io/containerssh/http"
 	"go.containerssh.io/containerssh/log"
@@ -42,14 +37,10 @@ import (
 const (
 	envListen        = "CONTAINERSSH_LISTEN"
 	envLogLevel      = "CONTAINERSSH_LOG_LEVEL"
-	envTLSCert       = "CONTAINERSSH_TLS_CERT"
-	envTLSKey        = "CONTAINERSSH_TLS_KEY"
-	envTLSClientCA   = "CONTAINERSSH_TLS_CLIENTCA"
 	envAuthentikURL  = "AUTHENTIK_URL"
 	envAuthToken     = "AUTHENTIK_TOKEN"
 	envAuthTokenFile = "AUTHENTIK_TOKEN_FILE"
 	envInsecure      = "AUTHENTIK_INSECURE_SKIP_VERIFY"
-	envRequireGroup  = "AUTH_SERVER_REQUIRE_GROUP"
 )
 
 func main() {
@@ -86,27 +77,15 @@ func main() {
 		"SSH key lookup: one exact attributes.%s list match",
 		attrSSHPublicKey,
 	))
-	// ---- auth behaviour ---------------------------------------------------
-	authCfg := authConfig{
-		RequireGroup: env(envRequireGroup, ""),
-	}
-
 	// ---- server + service lifecycle --------------------------------------
-	httpConfig := config.HTTPServerConfiguration{Listen: listen}
-	if cert, key := env(envTLSCert, ""), env(envTLSKey, ""); cert != "" && key != "" {
-		httpConfig.Cert = cert
-		httpConfig.Key = key
-		httpConfig.ClientCACert = env(envTLSClientCA, "")
-	}
-
-	mux, err := buildHandlers(authentikClient, authCfg, logger)
-	if err != nil {
-		fail(logger, "AUTH_DEV_START_FAILED", "failed to build handlers: %v", err)
-	}
+	handler := authWebhook.NewHandler(
+		&authHandler{authentik: authentikClient, logger: logger},
+		logger,
+	)
 	srv, err := containersshHTTP.NewServer(
-		"authconfig",
-		httpConfig,
-		mux,
+		"auth",
+		config.HTTPServerConfiguration{Listen: listen},
+		handler,
 		logger,
 		func(url string) {
 			logger.Info(message.NewMessage(

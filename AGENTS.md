@@ -10,7 +10,7 @@ backend**. The deployment target is ContainerSSH's **persistent** execution mode
 connection creates a stable per-user pod, later connections exec into that same pod, and
 disconnecting does not delete it. It consists of:
 
-1. **`charts/containerssh/`** — a Helm chart (v2, `containerssh-0.1.7`, `appVersion: 0.6`) that
+1. **`charts/containerssh/`** — a Helm chart (v2, `containerssh-0.1.8`, `appVersion: 0.6`) that
    deploys ContainerSSH itself plus optional extras.
 2. **`config-server/`** — a small Go server implementing the ContainerSSH config webhook protocol
    (built on `go.containerssh.io/containerssh` `config/webhook`), serving **pod templates selected
@@ -35,7 +35,7 @@ Source of truth for ContainerSSH internals: `/Users/matthiasmatt/Documents/Work/
 dev.box/
 ├── AGENTS.md                  ← this file
 ├── charts/containerssh/       ← the Helm chart
-│   ├── Chart.yaml             (name containerssh, v0.1.7, appVersion 0.6)
+│   ├── Chart.yaml             (name containerssh, v0.1.8, appVersion 0.6)
 │   ├── values.yaml            (everything is configurable from here)
 │   ├── README.md
 │   └── templates/
@@ -59,8 +59,8 @@ dev.box/
 │   └── README.md
 ├── auth-server/               ← the authentik-backed auth webhook server source
 │   ├── main.go                (env/config, wiring, service lifecycle)
-│   ├── auth_handler.go        (OnPassword/OnPubKey/OnAuthorization + /config endpoint)
-│   ├── authentik.go           (authentik users API client: exact key lookup + group check)
+│   ├── auth_handler.go        (OnPassword/OnPubKey/OnAuthorization; only /pubkey decides)
+│   ├── authentik.go           (authentik users API client: exact key lookup)
 │   ├── auth_server_test.go    (tests against an in-memory authentik mock)
 │   ├── Dockerfile
 │   ├── go.mod                 (go 1.25.3, requires go.containerssh.io/containerssh v0.6.0 + x/crypto)
@@ -113,7 +113,7 @@ ssh ubuntu@dev.box.example.com
 | `ssh.hostKey.existingSecret` / `.privateKey` | `""` | stable host key; else ephemeral key fallback |
 | `auth.*.webhook.url` | `""` | external password/publicKey/authz webhook URLs (v0.6 YAML keys: `password`, `publicKey`, `authz` — NOT `pubkey`); chart rendering requires password or publicKey unless **auto-wired to the bundled auth-server** |
 | `auth.*.webhook.timeout` | `30s` | per-request timeout; overall auth timeout defaults to 60s |
-| `authServer.enabled` | `false` | deploy the bundled authentik-backed auth server + auto-wire `auth.publicKey/authz.webhook.url` |
+| `authServer.enabled` | `false` | deploy the bundled authentik-backed auth server + auto-wire `auth.publicKey.webhook.url` |
 | `authServer.authentik.url` / `.token` | `""` | authentik base URL + read-only service token (or `tokenSecret` existing Secret) — **required** when enabled |
 | `kubernetes.sessionNamespace` | `containerssh-sessions` | where user pods run (chart force-manages) |
 | `kubernetes.mode` | `connection` | chart default; **dev.box target is `persistent`**, not yet fully wired |
@@ -251,7 +251,7 @@ The rendered config is validated this way after every template change that alter
   single-element list containing the canonical comment-free key. Live measurements after the
   exact-string rollout: enrolled key lookup 145 ms; unknown key denial 74 ms; no parsing,
   fingerprint cache, alternate query, or directory scan. The bundled chart configures only
-  `publicKey` and `authz`; password authentication is absent.
+  `publicKey`; password and authz webhooks are absent.
 
 Remaining before the staged persistent-mode validation:
   1. Implement the persistent-mode contract in the chart/config server: render

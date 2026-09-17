@@ -254,7 +254,7 @@ configServer:
 
 # Bundled auth server (dev.box/auth-server). When enabled, the chart deploys it
 # as a sibling Deployment + Service next to ContainerSSH and auto-wires
-# auth.publicKey/authz.webhook.url to it. It does the authentik-backed SSH
+# auth.publicKey.webhook.url to it. It does the authentik-backed SSH
 # public-key lookup (see auth-server/README.md & auth-server/spec.md): the server
 # performs one exact users API query against attributes.sshPublicKey and denies
 # unless exactly one active owner is returned. Password authentication is not
@@ -283,9 +283,6 @@ authServer:
     tokenSecretKey: "token"         # key inside that Secret
     # AUTHENTIK_INSECURE_SKIP_VERIFY — dev only.
     insecureSkipVerify: false
-  # AUTH_SERVER_REQUIRE_GROUP: when set, require membership of this authentik
-  # group (post-auth authorization gate). Empty = allow all authenticated users.
-  requireGroup: ""
   resources:
     limits:
       cpu: 100m

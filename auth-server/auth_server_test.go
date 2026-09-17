@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -18,10 +17,6 @@ import (
 	"go.containerssh.io/containerssh/metadata"
 )
 
-// ---- helpers ---------------------------------------------------------------
-
-// newTestKey returns a unique key-shaped value. ContainerSSH validates the SSH
-// key before invoking this webhook; this server performs exact string lookup.
 func newTestKey(t *testing.T) string {
 	t.Helper()
 	data := make([]byte, 32)
@@ -44,24 +39,23 @@ func testLogger(t *testing.T) log.Logger {
 	return logger
 }
 
-func userWithKey(u authentikUser, key string) authentikUser {
-	if u.Attributes == nil {
-		u.Attributes = map[string]interface{}{}
+func userWithKey(username, key string, active bool) authentikUser {
+	return authentikUser{
+		Username: username,
+		IsActive: active,
+		Attributes: map[string]interface{}{
+			attrSSHPublicKey: []interface{}{key},
+		},
 	}
-	u.Attributes[attrSSHPublicKey] = []interface{}{key}
-	return u
 }
 
-// ---- mock authentik --------------------------------------------------------
-
-// mockAuthentik is a tiny in-memory re-implementation of the users API subset
-// the server relies on.
+// mockAuthentik implements only the exact users query used in production.
 type mockAuthentik struct {
 	t           *testing.T
 	users       []authentikUser
 	mu          sync.Mutex
-	statusCode  int // if non-zero, serve this status for every request
-	getRequests int // number of users-list GETs; verifies exact lookup stays one request
+	statusCode  int
+	getRequests int
 }
 
 func (m *mockAuthentik) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -71,300 +65,193 @@ func (m *mockAuthentik) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(m.statusCode)
 		return
 	}
-	p := r.URL.Path
-	if r.Method == http.MethodGet && p == "/api/v3/core/users/" {
-		m.getRequests++
-		q := r.URL.Query()
-		filtered := []authentikUser{}
-		for _, u := range m.users {
-			if ss, ok := q["attributes"]; ok && len(ss) > 0 {
-				// authentik semantics: the attribute value must equal the
-				// filter value as JSON (scalar vs scalar, list vs list).
-				var filter map[string]interface{}
-				if err := json.Unmarshal([]byte(ss[0]), &filter); err != nil {
-					m.t.Errorf("bad attributes filter %q: %v", ss[0], err)
-				}
-				mismatch := false
-				for k, v := range filter {
-					storedJSON, _ := json.Marshal(u.Attributes[k])
-					filterJSON, _ := json.Marshal(v)
-					if string(storedJSON) != string(filterJSON) {
-						mismatch = true
-						break
-					}
-				}
-				if mismatch {
-					continue
-				}
-			}
-			if name := q.Get("username"); name != "" && u.Username != name {
-				continue
-			}
-			if group := q.Get("groups_by_name"); group != "" {
-				ok := false
-				for _, g := range u.Groups {
-					if g.Name == group {
-						ok = true
-						break
-					}
-				}
-				if !ok {
-					continue
-				}
-			}
-			if uu, ok := q["uuid"]; ok && len(uu) > 0 {
-				for _, n := range uu {
-					if u.UUID == n {
-						filtered = append(filtered, u)
-					}
-				}
-				continue
-			}
-			filtered = append(filtered, u)
-		}
-		// Server-side paging, mirroring the DRF/authentik behavior: filters
-		// apply first, then the page is cut from the result set.
-		totalMatches := len(filtered)
-		pageSize := 100
-		if ps := q.Get("page_size"); ps != "" {
-			if n, err := strconv.Atoi(ps); err == nil && n > 0 {
-				pageSize = n
-			}
-		}
-		pageNo := 1
-		if p := q.Get("page"); p != "" {
-			if n, err := strconv.Atoi(p); err == nil && n > 0 {
-				pageNo = n
-			}
-		}
-		totalPages := (len(filtered) + pageSize - 1) / pageSize
-		if totalPages == 0 {
-			totalPages = 1
-		}
-		start := (pageNo - 1) * pageSize
-		if start > len(filtered) {
-			start = len(filtered)
-		}
-		end := start + pageSize
-		if end > len(filtered) {
-			end = len(filtered)
-		}
-		filtered = filtered[start:end]
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(paginatedUsers{
-			Results: filtered,
-			Pagination: struct {
-				Count      int `json:"count"`
-				Current    int `json:"current"`
-				TotalPages int `json:"total_pages"`
-			}{Count: totalMatches, Current: pageNo, TotalPages: totalPages},
-		})
+	if r.Method != http.MethodGet || r.URL.Path != authentikRestAPIV3 {
+		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	w.WriteHeader(404)
+	m.getRequests++
+
+	var filter map[string]interface{}
+	if err := json.Unmarshal([]byte(r.URL.Query().Get("attributes")), &filter); err != nil {
+		m.t.Errorf("invalid attributes filter: %v", err)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	filtered := []authentikUser{}
+	for _, user := range m.users {
+		match := true
+		for key, expected := range filter {
+			storedJSON, _ := json.Marshal(user.Attributes[key])
+			expectedJSON, _ := json.Marshal(expected)
+			if string(storedJSON) != string(expectedJSON) {
+				match = false
+				break
+			}
+		}
+		if match {
+			filtered = append(filtered, user)
+		}
+	}
+
+	response := paginatedUsers{Results: filtered}
+	response.Pagination.Count = len(filtered)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(response)
 }
 
-func newMockClient(t *testing.T, m *mockAuthentik) *authentikClient {
+func newMockClient(t *testing.T, mock *mockAuthentik) *authentikClient {
 	t.Helper()
-	srv := httptest.NewServer(m)
-	t.Cleanup(srv.Close)
+	server := httptest.NewServer(mock)
+	t.Cleanup(server.Close)
 	return &authentikClient{cfg: authentikConfig{
-		BaseURL:    srv.URL,
+		BaseURL:    server.URL,
 		ReadToken:  "read-token",
-		HTTPClient: srv.Client(),
+		HTTPClient: server.Client(),
 	}}
 }
-
-// ---- lookup semantics ------------------------------------------------------
 
 func TestLookupUser(t *testing.T) {
 	aliceKey := newTestKey(t)
 	bobKey := newTestKey(t)
 
 	t.Run("no user owns the key", func(t *testing.T) {
-		m := &mockAuthentik{t: t, users: []authentikUser{}}
-		c := newMockClient(t, m)
-		user, err := c.lookupUser(context.Background(), aliceKey)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if user != nil {
-			t.Fatalf("expected no user, got %+v", user)
+		user, err := newMockClient(t, &mockAuthentik{t: t}).lookupUser(context.Background(), aliceKey)
+		if err != nil || user != nil {
+			t.Fatalf("expected clean miss, got user=%+v err=%v", user, err)
 		}
 	})
 
 	t.Run("exactly one user", func(t *testing.T) {
-		m := &mockAuthentik{t: t, users: []authentikUser{
-			userWithKey(authentikUser{PK: 1, UUID: "u1", Username: "alice", IsActive: true}, aliceKey),
-		}}
-		c := newMockClient(t, m)
-		user, err := c.lookupUser(context.Background(), aliceKey)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if user == nil || user.Username != "alice" {
-			t.Fatalf("expected alice, got %+v", user)
+		mock := &mockAuthentik{t: t, users: []authentikUser{userWithKey("alice", aliceKey, true)}}
+		user, err := newMockClient(t, mock).lookupUser(context.Background(), aliceKey)
+		if err != nil || user == nil || user.Username != "alice" {
+			t.Fatalf("expected alice, got user=%+v err=%v", user, err)
 		}
 	})
 
 	t.Run("multiple users deny cleanly", func(t *testing.T) {
-		m := &mockAuthentik{t: t, users: []authentikUser{
-			userWithKey(authentikUser{PK: 1, UUID: "u1", Username: "alice", IsActive: true}, aliceKey),
-			userWithKey(authentikUser{PK: 2, UUID: "u2", Username: "mallory", IsActive: true}, aliceKey),
+		mock := &mockAuthentik{t: t, users: []authentikUser{
+			userWithKey("alice", aliceKey, true),
+			userWithKey("mallory", aliceKey, true),
 		}}
-		c := newMockClient(t, m)
-		user, err := c.lookupUser(context.Background(), aliceKey)
+		user, err := newMockClient(t, mock).lookupUser(context.Background(), aliceKey)
 		if err != nil || user != nil {
-			t.Fatalf("expected duplicate key to deny cleanly, got user=%+v err=%v", user, err)
+			t.Fatalf("expected duplicate key denial, got user=%+v err=%v", user, err)
 		}
 	})
 
 	t.Run("api failure is surfaced", func(t *testing.T) {
-		m := &mockAuthentik{t: t, statusCode: 500}
-		c := newMockClient(t, m)
-		if _, err := c.lookupUser(context.Background(), bobKey); err == nil {
-			t.Fatal("expected error for API failure")
+		mock := &mockAuthentik{t: t, statusCode: http.StatusInternalServerError}
+		if _, err := newMockClient(t, mock).lookupUser(context.Background(), bobKey); err == nil {
+			t.Fatal("expected API error")
 		}
 	})
 }
 
-// ---- exact public-key attribute semantics ---------------------------------
-
 func TestLookupByKeyAttribute(t *testing.T) {
-	aliceKey := newTestKey(t)
-	canonical := strings.TrimSpace(aliceKey)
-
-	userWithRawKey := func(u authentikUser, value interface{}) authentikUser {
-		if u.Attributes == nil {
-			u.Attributes = map[string]interface{}{}
+	key := newTestKey(t)
+	userWithValue := func(value interface{}) authentikUser {
+		return authentikUser{
+			Username:   "alice",
+			IsActive:   true,
+			Attributes: map[string]interface{}{attrSSHPublicKey: value},
 		}
-		u.Attributes[attrSSHPublicKey] = value
-		return u
 	}
-	lookup := func(t *testing.T, m *mockAuthentik) (*authentikUser, error) {
+	lookup := func(t *testing.T, mock *mockAuthentik) (*authentikUser, error) {
 		t.Helper()
-		return newMockClient(t, m).lookupUser(context.Background(), canonical)
+		return newMockClient(t, mock).lookupUser(context.Background(), key)
 	}
 
 	t.Run("exact single-element list returns its sole user", func(t *testing.T) {
-		m := &mockAuthentik{t: t, users: []authentikUser{
-			userWithRawKey(
-				authentikUser{PK: 1, UUID: "u1", Username: "alice", IsActive: true},
-				[]interface{}{canonical},
-			),
-		}}
-		user, err := lookup(t, m)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
+		mock := &mockAuthentik{t: t, users: []authentikUser{userWithValue([]interface{}{key})}}
+		user, err := lookup(t, mock)
+		if err != nil || user == nil || user.Username != "alice" {
+			t.Fatalf("expected alice, got user=%+v err=%v", user, err)
 		}
-		if user == nil || user.Username != "alice" {
-			t.Fatalf("expected alice, got %+v", user)
-		}
-		if m.getRequests != 1 {
-			t.Fatalf("expected one exact API query, got %d", m.getRequests)
+		if mock.getRequests != 1 {
+			t.Fatalf("expected one API query, got %d", mock.getRequests)
 		}
 	})
 
-	t.Run("commented list value is an exact miss", func(t *testing.T) {
-		m := &mockAuthentik{t: t, users: []authentikUser{
-			userWithRawKey(
-				authentikUser{PK: 1, UUID: "u1", Username: "alice", IsActive: true},
-				[]interface{}{canonical + " alice@laptop"},
-			),
-		}}
-		user, err := lookup(t, m)
+	t.Run("different commented value is an exact miss", func(t *testing.T) {
+		mock := &mockAuthentik{t: t, users: []authentikUser{userWithValue([]interface{}{key + " alice@laptop"})}}
+		user, err := lookup(t, mock)
 		if err != nil || user != nil {
-			t.Fatalf("expected clean exact-match denial, got user=%+v err=%v", user, err)
+			t.Fatalf("expected exact-match denial, got user=%+v err=%v", user, err)
 		}
-		if m.getRequests != 1 {
-			t.Fatalf("expected no scan after the exact miss, got %d requests", m.getRequests)
+		if mock.getRequests != 1 {
+			t.Fatalf("expected one API query, got %d", mock.getRequests)
 		}
 	})
 
 	t.Run("scalar value is an exact miss", func(t *testing.T) {
-		m := &mockAuthentik{t: t, users: []authentikUser{
-			userWithRawKey(
-				authentikUser{PK: 1, UUID: "u1", Username: "alice", IsActive: true},
-				canonical,
-			),
-		}}
-		user, err := lookup(t, m)
+		mock := &mockAuthentik{t: t, users: []authentikUser{userWithValue(key)}}
+		user, err := lookup(t, mock)
 		if err != nil || user != nil {
 			t.Fatalf("expected list-shaped exact-match denial, got user=%+v err=%v", user, err)
 		}
 	})
 
 	t.Run("no user denies after one request", func(t *testing.T) {
-		m := &mockAuthentik{t: t}
-		user, err := lookup(t, m)
+		mock := &mockAuthentik{t: t}
+		user, err := lookup(t, mock)
 		if err != nil || user != nil {
 			t.Fatalf("expected clean denial, got user=%+v err=%v", user, err)
 		}
-		if m.getRequests != 1 {
-			t.Fatalf("expected one exact API query, got %d", m.getRequests)
+		if mock.getRequests != 1 {
+			t.Fatalf("expected one API query, got %d", mock.getRequests)
 		}
 	})
 
 	t.Run("multiple users deny cleanly", func(t *testing.T) {
-		value := []interface{}{canonical}
-		m := &mockAuthentik{t: t, users: []authentikUser{
-			userWithRawKey(authentikUser{PK: 1, UUID: "u1", Username: "alice", IsActive: true}, value),
-			userWithRawKey(authentikUser{PK: 2, UUID: "u2", Username: "mallory", IsActive: true}, value),
-		}}
-		user, err := lookup(t, m)
+		value := []interface{}{key}
+		mock := &mockAuthentik{t: t, users: []authentikUser{userWithValue(value), userWithValue(value)}}
+		user, err := lookup(t, mock)
 		if err != nil || user != nil {
-			t.Fatalf("expected duplicate key to deny cleanly, got user=%+v err=%v", user, err)
+			t.Fatalf("expected duplicate key denial, got user=%+v err=%v", user, err)
 		}
-		if m.getRequests != 1 {
-			t.Fatalf("expected one exact API query, got %d", m.getRequests)
+		if mock.getRequests != 1 {
+			t.Fatalf("expected one API query, got %d", mock.getRequests)
 		}
 	})
 
-	t.Run("api failure is surfaced without leaking the key", func(t *testing.T) {
-		m := &mockAuthentik{t: t, statusCode: 500}
-		_, err := lookup(t, m)
+	t.Run("api failure does not leak the key", func(t *testing.T) {
+		mock := &mockAuthentik{t: t, statusCode: http.StatusInternalServerError}
+		_, err := lookup(t, mock)
 		if err == nil {
-			t.Fatal("expected error for API failure")
+			t.Fatal("expected API error")
 		}
-		if strings.Contains(err.Error(), canonical) {
+		if strings.Contains(err.Error(), key) {
 			t.Fatalf("API error contains public key material: %v", err)
 		}
 	})
 }
 
-// ---- OnPubKey ---------------------------------------------------------------
-
 func TestOnPubKey(t *testing.T) {
 	aliceKey := newTestKey(t)
 	bobKey := newTestKey(t)
-	alice := userWithKey(authentikUser{PK: 1, UUID: "u1", Username: "alice", IsActive: true}, aliceKey)
-
-	newHandler := func() *authHandler {
-		m := &mockAuthentik{t: t, users: []authentikUser{alice}}
+	newHandler := func(users ...authentikUser) *authHandler {
 		return &authHandler{
-			authentik: newMockClient(t, m),
+			authentik: newMockClient(t, &mockAuthentik{t: t, users: users}),
 			logger:    testLogger(t),
 		}
 	}
 
 	t.Run("valid key succeeds as owner", func(t *testing.T) {
-		h := newHandler()
-		ok, meta, err := h.OnPubKey(
-			metadata.NewTestAuthenticatingMetadata("alice"),
+		handler := newHandler(userWithKey("alice", aliceKey, true))
+		ok, meta, err := handler.OnPubKey(
+			metadata.NewTestAuthenticatingMetadata("pod-template"),
 			auth.PublicKey{PublicKey: aliceKey},
 		)
-		if err != nil || !ok {
-			t.Fatalf("expected success, got ok=%v err=%v", ok, err)
-		}
-		if meta.AuthenticatedUsername != "alice" {
-			t.Fatalf("expected authenticated as alice, got %q", meta.AuthenticatedUsername)
+		if err != nil || !ok || meta.AuthenticatedUsername != "alice" {
+			t.Fatalf("expected alice, got ok=%v owner=%q err=%v", ok, meta.AuthenticatedUsername, err)
 		}
 	})
 
 	t.Run("key not enrolled is denied", func(t *testing.T) {
-		h := newHandler()
-		ok, _, err := h.OnPubKey(
-			metadata.NewTestAuthenticatingMetadata("bob"),
+		handler := newHandler(userWithKey("alice", aliceKey, true))
+		ok, _, err := handler.OnPubKey(
+			metadata.NewTestAuthenticatingMetadata("pod-template"),
 			auth.PublicKey{PublicKey: bobKey},
 		)
 		if ok || err != nil {
@@ -372,106 +259,61 @@ func TestOnPubKey(t *testing.T) {
 		}
 	})
 
-	t.Run("requested pod-template username authenticates as owner", func(t *testing.T) {
-		h := newHandler()
-		ok, meta, err := h.OnPubKey(
-			metadata.NewTestAuthenticatingMetadata("anything"),
+	t.Run("requested username does not replace authenticated owner", func(t *testing.T) {
+		handler := newHandler(userWithKey("alice", aliceKey, true))
+		ok, meta, err := handler.OnPubKey(
+			metadata.NewTestAuthenticatingMetadata("ubuntu"),
 			auth.PublicKey{PublicKey: aliceKey},
 		)
-		if err != nil || !ok {
-			t.Fatalf("expected success, got ok=%v err=%v", ok, err)
-		}
-		if meta.AuthenticatedUsername != "alice" {
-			t.Fatalf("expected authenticated as alice, got %q", meta.AuthenticatedUsername)
+		if err != nil || !ok || meta.AuthenticatedUsername != "alice" {
+			t.Fatalf("expected alice owner, got ok=%v owner=%q err=%v", ok, meta.AuthenticatedUsername, err)
 		}
 	})
 
 	t.Run("inactive owner is denied", func(t *testing.T) {
-		m := &mockAuthentik{t: t, users: []authentikUser{
-			userWithKey(authentikUser{PK: 2, UUID: "u2", Username: "gone", IsActive: false}, aliceKey),
-		}}
-		h := &authHandler{
-			authentik: newMockClient(t, m),
-			logger:    testLogger(t),
-		}
-		ok, _, err := h.OnPubKey(
-			metadata.NewTestAuthenticatingMetadata("gone"),
+		handler := newHandler(userWithKey("alice", aliceKey, false))
+		ok, _, err := handler.OnPubKey(
+			metadata.NewTestAuthenticatingMetadata("pod-template"),
 			auth.PublicKey{PublicKey: aliceKey},
 		)
 		if ok || err != nil {
-			t.Fatalf("expected denied for inactive user, got ok=%v err=%v", ok, err)
+			t.Fatalf("expected inactive-user denial, got ok=%v err=%v", ok, err)
 		}
 	})
 }
 
-// ---- OnPubKey exact attribute semantics ------------------------------------
-
 func TestOnPubKeyWithKeyAttribute(t *testing.T) {
-	aliceKey := newTestKey(t)
-	canonical := strings.TrimSpace(aliceKey)
-
+	key := newTestKey(t)
 	newHandler := func(value interface{}) *authHandler {
-		m := &mockAuthentik{t: t, users: []authentikUser{func() authentikUser {
-			u := authentikUser{PK: 1, UUID: "u1", Username: "alice", IsActive: true}
-			u.Attributes = map[string]interface{}{attrSSHPublicKey: value}
-			return u
-		}()}}
+		user := authentikUser{
+			Username:   "alice",
+			IsActive:   true,
+			Attributes: map[string]interface{}{attrSSHPublicKey: value},
+		}
 		return &authHandler{
-			authentik: newMockClient(t, m),
+			authentik: newMockClient(t, &mockAuthentik{t: t, users: []authentikUser{user}}),
 			logger:    testLogger(t),
 		}
 	}
 
-	t.Run("canonical single-element list authenticates", func(t *testing.T) {
-		h := newHandler([]interface{}{canonical})
-		ok, meta, err := h.OnPubKey(
-			metadata.NewTestAuthenticatingMetadata("alice"),
-			auth.PublicKey{PublicKey: aliceKey},
+	t.Run("exact single-element list authenticates", func(t *testing.T) {
+		ok, meta, err := newHandler([]interface{}{key}).OnPubKey(
+			metadata.NewTestAuthenticatingMetadata("pod-template"),
+			auth.PublicKey{PublicKey: key},
 		)
-		if err != nil || !ok {
-			t.Fatalf("expected success via attributes.sshPublicKey, got ok=%v err=%v", ok, err)
-		}
-		if meta.AuthenticatedUsername != "alice" {
-			t.Fatalf("expected authenticated as alice, got %q", meta.AuthenticatedUsername)
+		if err != nil || !ok || meta.AuthenticatedUsername != "alice" {
+			t.Fatalf("expected alice, got ok=%v owner=%q err=%v", ok, meta.AuthenticatedUsername, err)
 		}
 	})
 
 	t.Run("comment is preserved for exact matching", func(t *testing.T) {
-		commented := canonical + " alice@laptop"
-		h := newHandler([]interface{}{commented})
-		ok, _, err := h.OnPubKey(
+		commented := key + " alice@laptop"
+		ok, _, err := newHandler([]interface{}{commented}).OnPubKey(
 			metadata.NewTestAuthenticatingMetadata("pod-template"),
 			auth.PublicKey{PublicKey: commented},
 		)
 		if err != nil || !ok {
-			t.Fatalf("expected exact commented key to authenticate, got ok=%v err=%v", ok, err)
+			t.Fatalf("expected commented exact match, got ok=%v err=%v", ok, err)
 		}
 	})
-}
-
-// ---- OnAuthorization ---------------------------------------------------------
-
-func TestOnAuthorizationGroupGate(t *testing.T) {
-	key := newTestKey(t)
-	alice := userWithKey(authentikUser{
-		PK: 1, UUID: "u1", Username: "alice", IsActive: true,
-		Groups: []authentikGroup{{PK: "g1", Name: "ssh-users"}},
-	}, key)
-	m := &mockAuthentik{t: t, users: []authentikUser{alice}}
-	h := &authHandler{
-		authentik: newMockClient(t, m),
-		cfg:       authConfig{RequireGroup: "ssh-users"},
-		logger:    testLogger(t),
-	}
-
-	meta := metadata.NewTestAuthenticatingMetadata("alice").Authenticated("alice")
-	if ok, _, err := h.OnAuthorization(meta); err != nil || !ok {
-		t.Fatalf("expected group allow, got ok=%v err=%v", ok, err)
-	}
-
-	meta = metadata.NewTestAuthenticatingMetadata("alice").Authenticated("alice")
-	h.cfg.RequireGroup = "admins"
-	if ok, _, err := h.OnAuthorization(meta); ok || err != nil {
-		t.Fatalf("expected group deny, got ok=%v err=%v", ok, err)
-	}
 }

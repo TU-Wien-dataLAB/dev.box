@@ -47,10 +47,10 @@ owner.
 | --- | --- |
 | `POST /pubkey` | authentik-backed SSH public-key authentication |
 | `POST /password` | always denied; required only by ContainerSSH's handler interface |
-| `POST /authz` | optional authentik group gate |
-| `POST /config` | empty config; ContainerSSH retains its base configuration |
+| `POST /authz` | always allow; required only by ContainerSSH's handler interface |
 
-The server uses ContainerSSH's official `auth/webhook` and `config/webhook` packages.
+The server uses ContainerSSH's official `auth/webhook` package. Pod configuration is exclusively
+the separate config-server's responsibility.
 
 ## Environment
 
@@ -58,13 +58,9 @@ The server uses ContainerSSH's official `auth/webhook` and `config/webhook` pack
 | --- | --- | --- |
 | `CONTAINERSSH_LISTEN` | `0.0.0.0:8080` | Listen address |
 | `CONTAINERSSH_LOG_LEVEL` | `6` | Syslog style: `7` debug through `2` critical |
-| `CONTAINERSSH_TLS_CERT` | — | Server certificate path or PEM; enables HTTPS |
-| `CONTAINERSSH_TLS_KEY` | — | Server private-key path or PEM |
-| `CONTAINERSSH_TLS_CLIENTCA` | — | CA used to verify clients; enables mTLS |
 | `AUTHENTIK_URL` | **required** | authentik base URL |
 | `AUTHENTIK_TOKEN` / `AUTHENTIK_TOKEN_FILE` | **required** | token with read access to users; `_FILE` wins |
 | `AUTHENTIK_INSECURE_SKIP_VERIFY` | `false` | skip TLS verification; development only |
-| `AUTH_SERVER_REQUIRE_GROUP` | — | optional authentik group required after authentication |
 
 ## Build and test
 
@@ -96,8 +92,8 @@ authServer:
     tokenSecret: containerssh-authentik-token
 ```
 
-The chart deploys the webhook and wires ContainerSSH's public-key and authorization webhook URLs
-to it. The authentik token only needs read access to users.
+The chart deploys the webhook and wires only ContainerSSH's public-key webhook URL to it. The
+authentik token only needs read access to users.
 
 ## Security properties
 
