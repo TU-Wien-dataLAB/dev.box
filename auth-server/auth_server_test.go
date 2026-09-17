@@ -44,8 +44,16 @@ func userWithKey(username, key string, active bool) authentikUser {
 		Username: username,
 		IsActive: active,
 		Attributes: map[string]interface{}{
-			attrSSHPublicKey: []interface{}{key},
+			attrSSHPublicKeyDefault: []interface{}{key},
 		},
+	}
+}
+
+func userWithCustomAttr(username, attr string, value interface{}) authentikUser {
+	return authentikUser{
+		Username:   "alice",
+		IsActive:   true,
+		Attributes: map[string]interface{}{attr: value},
 	}
 }
 
@@ -171,7 +179,7 @@ func TestLookupByKeyAttribute(t *testing.T) {
 		return authentikUser{
 			Username:   "alice",
 			IsActive:   true,
-			Attributes: map[string]interface{}{attrSSHPublicKey: value},
+			Attributes: map[string]interface{}{attrSSHPublicKeyDefault: value},
 		}
 	}
 	lookup := func(t *testing.T, mock *mockAuthentik) (*authentikUser, error) {
@@ -242,6 +250,17 @@ func TestLookupByKeyAttribute(t *testing.T) {
 			t.Fatalf("API error contains public key material: %v", err)
 		}
 	})
+
+	t.Run("custom attribute name is honoured", func(t *testing.T) {
+		client := newMockClient(t, &mockAuthentik{t: t, users: []authentikUser{userWithCustomAttr(
+			"alice", "myCustomKey", []interface{}{key},
+		)}})
+		client.cfg.KeyAttribute = "myCustomKey"
+		user, err := client.lookupUser(context.Background(), key)
+		if err != nil || user == nil || user.Username != "alice" {
+			t.Fatalf("expected alice via custom attribute, got user=%+v err=%v", user, err)
+		}
+	})
 }
 
 func TestOnPubKey(t *testing.T) {
@@ -305,7 +324,7 @@ func TestOnPubKeyWithKeyAttribute(t *testing.T) {
 		user := authentikUser{
 			Username:   "alice",
 			IsActive:   true,
-			Attributes: map[string]interface{}{attrSSHPublicKey: value},
+			Attributes: map[string]interface{}{attrSSHPublicKeyDefault: value},
 		}
 		return &authHandler{
 			authentik: newMockClient(t, &mockAuthentik{t: t, users: []authentikUser{user}}),

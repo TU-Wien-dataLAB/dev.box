@@ -5,7 +5,7 @@ description: An SSH server for on-demand or persistent Kubernetes pods with audi
 type: application
 
 # This is the chart version. Bump this when you change the chart itself.
-version: 0.1.9
+version: 0.1.10
 
 # This is the ContainerSSH version the chart is tested/validated against.
 appVersion: "0.6"

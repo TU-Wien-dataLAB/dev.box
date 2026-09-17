@@ -17,7 +17,8 @@ query, or directory scan.
 
 ## Public-key contract
 
-Each authentik user may have one key in `attributes.sshPublicKey`. The value must be a
+Each authentik user may have one key in `attributes.sshPublicKey` (the attribute is configurable
+via `AUTH_SERVER_KEY_ATTRIBUTE`). The value must be a
 single-element JSON list containing the exact public-key string ContainerSSH supplies:
 
 ```json
@@ -61,6 +62,7 @@ the separate config-server's responsibility.
 | `AUTHENTIK_URL` | **required** | authentik base URL |
 | `AUTHENTIK_TOKEN` / `AUTHENTIK_TOKEN_FILE` | **required** | token with read access to users; `_FILE` wins |
 | `AUTHENTIK_INSECURE_SKIP_VERIFY` | `false` | skip TLS verification; development only |
+| `AUTH_SERVER_KEY_ATTRIBUTE` | `sshPublicKey` | authentik user attribute the presented key is looked up by; the stored value must be a single-element JSON list containing the exact key string |
 | `AUTH_SERVER_REQUIRE_GROUP` | — | optional authentik group required after authentication |
 
 ## Build and test

@@ -283,6 +283,10 @@ authServer:
     tokenSecretKey: "token"         # key inside that Secret
     # AUTHENTIK_INSECURE_SKIP_VERIFY — dev only.
     insecureSkipVerify: false
+    # AUTH_SERVER_KEY_ATTRIBUTE: which authentik user attribute the presented
+    # SSH key is looked up by. Empty = attributes.sshPublicKey (the documented
+    # contract: a single-element JSON list containing the exact key string).
+    keyAttribute: ""
   # AUTH_SERVER_REQUIRE_GROUP: when set, require membership of this authentik
   # group (post-auth authorization gate). Empty = allow all authenticated users.
   requireGroup: ""

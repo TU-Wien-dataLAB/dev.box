@@ -11,7 +11,7 @@ attempt. It does not maintain a fingerprint index, scan users, or retry with alt
 ## Authentik data contract
 
 Authentik has no built-in SSH-key field, but every user has an arbitrary `attributes` JSON object.
-The user's SSH key is stored under `sshPublicKey`:
+The user's SSH key is stored under `sshPublicKey` (configurable via `AUTH_SERVER_KEY_ATTRIBUTE`):
 
 ```json
 {
@@ -119,7 +119,7 @@ Required:
 - `AUTHENTIK_URL`
 - `AUTHENTIK_TOKEN` or `AUTHENTIK_TOKEN_FILE`
 
-There is intentionally no configurable key attribute, username-binding mode, password allowlist,
-write token, synchronization interval, fingerprint mode, custom-CA setting, or
-server-side TLS/mTLS configuration. The single
-`attributes.sshPublicKey` contract keeps the login path deterministic.
+There is intentionally no fingerprint mode, username-binding mode, password allowlist, write token,
+synchronization interval, custom-CA setting, or server-side TLS/mTLS configuration. The attribute
+name is configurable (`AUTH_SERVER_KEY_ATTRIBUTE`); the lookup itself stays a single exact query.
+The default `attributes.sshPublicKey` contract keeps the login path deterministic.

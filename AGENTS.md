@@ -113,8 +113,10 @@ ssh ubuntu@dev.box.example.com
 | `ssh.hostKey.existingSecret` / `.privateKey` | `""` | stable host key; else ephemeral key fallback |
 | `auth.*.webhook.url` | `""` | external password/publicKey/authz webhook URLs (v0.6 YAML keys: `password`, `publicKey`, `authz` — NOT `pubkey`); chart rendering requires password or publicKey unless **auto-wired to the bundled auth-server** |
 | `auth.*.webhook.timeout` | `30s` | per-request timeout; overall auth timeout defaults to 60s |
-| `authServer.enabled` | `false` | deploy the bundled authentik-backed auth server + auto-wire `auth.publicKey.webhook.url` |
+| `authServer.enabled` | `false` | deploy the bundled authentik-backed auth server + auto-wire `auth.publicKey/authz.webhook.url` |
 | `authServer.authentik.url` / `.token` | `""` | authentik base URL + read-only service token (or `tokenSecret` existing Secret) — **required** when enabled |
+| `authServer.authentik.keyAttribute` | `""` | user attribute the presented key is looked up by (default `sshPublicKey`) |
+| `authServer.requireGroup` | `""` | optional authentik group required after authentication (authz gate) |
 | `kubernetes.sessionNamespace` | `containerssh-sessions` | where user pods run (chart force-manages) |
 | `kubernetes.mode` | `connection` | chart default; **dev.box target is `persistent`**, not yet fully wired |
 | `kubernetes.pod` | security hard defaults | base/fallback pod config |

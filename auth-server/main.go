@@ -41,6 +41,7 @@ const (
 	envAuthToken     = "AUTHENTIK_TOKEN"
 	envAuthTokenFile = "AUTHENTIK_TOKEN_FILE"
 	envInsecure      = "AUTHENTIK_INSECURE_SKIP_VERIFY"
+	envKeyAttribute  = "AUTH_SERVER_KEY_ATTRIBUTE"
 	envRequireGroup  = "AUTH_SERVER_REQUIRE_GROUP"
 )
 
@@ -68,15 +69,17 @@ func main() {
 	}
 	httpClient := newHTTPClient(envBool(envInsecure))
 
+	keyAttribute := env(envKeyAttribute, attrSSHPublicKeyDefault)
 	authentikClient := &authentikClient{cfg: authentikConfig{
-		BaseURL:    authenticURL,
-		ReadToken:  readToken,
-		HTTPClient: httpClient,
+		BaseURL:      authenticURL,
+		KeyAttribute: keyAttribute,
+		ReadToken:    readToken,
+		HTTPClient:   httpClient,
 	}}
 	logger.Info(message.NewMessage(
 		"AUTH_DEV_KEY_LOOKUP",
 		"SSH key lookup: one exact attributes.%s list match",
-		attrSSHPublicKey,
+		keyAttribute,
 	))
 	// ---- auth behaviour ---------------------------------------------------
 	authCfg := authConfig{

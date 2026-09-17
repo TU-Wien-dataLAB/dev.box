@@ -13,10 +13,10 @@ import (
 )
 
 const (
-	// attrSSHPublicKey is the authentik user attribute searched during SSH
-	// login. Its value must be a single-element JSON list containing exactly
-	// the public-key string supplied by ContainerSSH.
-	attrSSHPublicKey = "sshPublicKey"
+	// attrSSHPublicKeyDefault is the default authentik user attribute searched
+	// during SSH login. Its value must be a single-element JSON list containing
+	// exactly the public-key string supplied by ContainerSSH.
+	attrSSHPublicKeyDefault = "sshPublicKey"
 
 	authentikRestAPIV3 = "/api/v3/core/users/"
 )
@@ -43,9 +43,12 @@ type paginatedUsers struct {
 }
 
 type authentikConfig struct {
-	BaseURL    string
-	ReadToken  string
-	HTTPClient *http.Client
+	BaseURL string
+	// KeyAttribute names the user attribute the presented key is looked up by
+	// (AUTH_SERVER_KEY_ATTRIBUTE). Empty defaults to sshPublicKey.
+	KeyAttribute string
+	ReadToken    string
+	HTTPClient   *http.Client
 }
 
 type authentikClient struct {
@@ -53,14 +56,19 @@ type authentikClient struct {
 }
 
 // lookupUser performs one exact authentik query for a single-element list
-// containing the SSH public-key string supplied by ContainerSSH. Exactly one
-// result returns its owner; zero or multiple results are a clean auth miss.
+// containing the SSH public-key string supplied by ContainerSSH, against the
+// configured key attribute. Exactly one result returns its owner; zero or
+// multiple results are a clean authentication miss.
 func (c *authentikClient) lookupUser(
 	ctx context.Context,
 	publicKey string,
 ) (*authentikUser, error) {
+	keyAttribute := c.cfg.KeyAttribute
+	if keyAttribute == "" {
+		keyAttribute = attrSSHPublicKeyDefault
+	}
 	filter, err := json.Marshal(map[string][]string{
-		attrSSHPublicKey: {publicKey},
+		keyAttribute: {publicKey},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode SSH key filter: %w", err)
