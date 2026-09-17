@@ -282,8 +282,9 @@ authServer:
 
 When enabled the chart: creates a Secret (from `token`, or reuses `tokenSecret`), deploys the
 server next to ContainerSSH, and auto-wires `auth.publicKey/authz.webhook.url` to its Service
-(`http://<release>-auth-server.<ns>.svc.cluster.local:8080`). SSH in with the authentik
-username whose key is enrolled:
+(`http://<release>-auth-server.<ns>.svc.cluster.local:8080`). Authenticate with an enrolled key;
+the requested SSH username selects the pod template, while authenticated metadata records the
+key's authentik owner:
 
 ```bash
 helm install containerssh . \

@@ -234,11 +234,11 @@ The rendered config is validated this way after every template change that alter
 - Target cluster context: **`container-ssh`** (created; control plane reachable).
   Current default context is `ai-platform` — pass `--kube-context container-ssh` explicitly
   (helm) / `--context container-ssh` (kubectl).
-- Helm release `containerssh` revision 10 is **deployed** in namespace `containerssh` with chart
-  `0.1.6`; ContainerSSH, auth-server, and config-server are all Ready. Ingress remains disabled
+- Helm release `containerssh` revision 11 is **deployed** in namespace `containerssh` with chart
+  `0.1.7`; ContainerSSH, auth-server, and config-server are all Ready. Ingress remains disabled
   (ClusterIP + local port-forward).
-- The auth-server is pinned to immutable tag `sha-562f105` (image digest
-  `sha256:8021da330362b1803092ee0126501827bc589b336ef9b175285278a5ab804773`); the config-server
+- The auth-server is pinned to immutable tag `sha-f4abe20` (image digest
+  `sha256:0a8fed0dcb8e91f4210bda35cebfa430fed1edfe9b2be9dd2daacbc841048bcd`); the config-server
   still uses `main`. The authentik read token and stable host key are mounted from existing Secrets
   (`containerssh-authentik-token`, `containerssh-host-key`).
 - A real connection-mode SSH check passed on 2026-09-17:
@@ -249,8 +249,9 @@ The rendered config is validated this way after every template change that alter
   `containerssh/containerssh-guest-image`. Authentication uses one exact
   `attributes.sshPublicKey` list query with username enforcement disabled. The enrolled value is a
   single-element list containing the canonical comment-free key. Live measurements after the
-  simplified rollout: enrolled key lookup 145 ms; unknown key denial 61 ms; no fingerprint cache,
-  alternate query, or directory scan.
+  exact-string rollout: enrolled key lookup 145 ms; unknown key denial 74 ms; no parsing,
+  fingerprint cache, alternate query, or directory scan. The bundled chart configures only
+  `publicKey` and `authz`; password authentication is absent.
 
 Remaining before the staged persistent-mode validation:
   1. Implement the persistent-mode contract in the chart/config server: render
