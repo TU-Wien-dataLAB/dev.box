@@ -234,11 +234,11 @@ The rendered config is validated this way after every template change that alter
 - Target cluster context: **`container-ssh`** (created; control plane reachable).
   Current default context is `ai-platform` — pass `--kube-context container-ssh` explicitly
   (helm) / `--context container-ssh` (kubectl).
-- Helm release `containerssh` revision 11 is **deployed** in namespace `containerssh` with chart
-  `0.1.7`; ContainerSSH, auth-server, and config-server are all Ready. Ingress remains disabled
+- Helm release `containerssh` revision 12 is **deployed** in namespace `containerssh` with chart
+  `0.1.8`; ContainerSSH, auth-server, and config-server are all Ready. Ingress remains disabled
   (ClusterIP + local port-forward).
-- The auth-server is pinned to immutable tag `sha-f4abe20` (image digest
-  `sha256:0a8fed0dcb8e91f4210bda35cebfa430fed1edfe9b2be9dd2daacbc841048bcd`); the config-server
+- The auth-server is pinned to immutable tag `sha-f3dba9d` (image digest
+  `sha256:2c34fe133489b3e6183c2745f85a8f46d3f0afd740dfc3d81112fc9370b8dad0`); the config-server
   still uses `main`. The authentik read token and stable host key are mounted from existing Secrets
   (`containerssh-authentik-token`, `containerssh-host-key`).
 - A real connection-mode SSH check passed on 2026-09-17:
@@ -249,9 +249,10 @@ The rendered config is validated this way after every template change that alter
   `containerssh/containerssh-guest-image`. Authentication uses one exact
   `attributes.sshPublicKey` list query with username enforcement disabled. The enrolled value is a
   single-element list containing the canonical comment-free key. Live measurements after the
-  exact-string rollout: enrolled key lookup 145 ms; unknown key denial 74 ms; no parsing,
+  exact-string rollout: enrolled key lookup 199 ms; unknown key denial 75 ms; no parsing,
   fingerprint cache, alternate query, or directory scan. The bundled chart configures only
-  `publicKey`; password and authz webhooks are absent.
+  `publicKey`; password and authz webhooks are absent, and the auth server no longer serves
+  `/config` or a group gate.
 
 Remaining before the staged persistent-mode validation:
   1. Implement the persistent-mode contract in the chart/config server: render
