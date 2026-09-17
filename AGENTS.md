@@ -234,11 +234,11 @@ The rendered config is validated this way after every template change that alter
 - Target cluster context: **`container-ssh`** (created; control plane reachable).
   Current default context is `ai-platform` — pass `--kube-context container-ssh` explicitly
   (helm) / `--context container-ssh` (kubectl).
-- Helm release `containerssh` revision 12 is **deployed** in namespace `containerssh` with chart
-  `0.1.8`; ContainerSSH, auth-server, and config-server are all Ready. Ingress remains disabled
+- Helm release `containerssh` revision 13 is **deployed** in namespace `containerssh` with chart
+  `0.1.9`; ContainerSSH, auth-server, and config-server are all Ready. Ingress remains disabled
   (ClusterIP + local port-forward).
-- The auth-server is pinned to immutable tag `sha-f3dba9d` (image digest
-  `sha256:2c34fe133489b3e6183c2745f85a8f46d3f0afd740dfc3d81112fc9370b8dad0`); the config-server
+- The auth-server is pinned to immutable tag `sha-e0eaa58` (image digest
+  `sha256:0b417c0d27c757ca96aa79cef71d6920f9faf1c5c40e4606cc2dd5b0cca4758a`); the config-server
   still uses `main`. The authentik read token and stable host key are mounted from existing Secrets
   (`containerssh-authentik-token`, `containerssh-host-key`).
 - A real connection-mode SSH check passed on 2026-09-17:
