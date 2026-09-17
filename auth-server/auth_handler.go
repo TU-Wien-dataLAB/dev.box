@@ -16,12 +16,22 @@ const (
 	logCodePubKeyDenied  = "AUTH_SERVER_PUBKEY_DENIED"
 	logCodePubKeyError   = "AUTH_SERVER_PUBKEY_ERROR"
 	logCodePassDenied    = "AUTH_SERVER_PASSWORD_DENIED"
+	logCodeAuthzDenied   = "AUTH_SERVER_AUTHZ_DENIED"
+	logCodeAuthzError    = "AUTH_SERVER_AUTHZ_ERROR"
 )
+
+// authConfig carries the optional post-auth group policy.
+type authConfig struct {
+	// RequireGroup, when set, makes OnAuthorization demand membership of this
+	// authentik group before the session starts.
+	RequireGroup string
+}
 
 // authHandler implements ContainerSSH's required authentication interface.
 // Only public-key authentication can succeed.
 type authHandler struct {
 	authentik *authentikClient
+	cfg       authConfig
 	logger    log.Logger
 }
 
@@ -92,10 +102,34 @@ func (h *authHandler) OnPubKey(
 	return true, meta.Authenticated(user.Username), nil
 }
 
-// OnAuthorization exists because ContainerSSH's handler interface requires it.
-// Authentication policy is fully decided by OnPubKey.
+// OnAuthorization runs after a successful authentication. By default it allows
+// everyone through; with AUTH_SERVER_REQUIRE_GROUP set it gates access on
+// membership of that authentik group.
 func (h *authHandler) OnAuthorization(
 	meta metadata.ConnectionAuthenticatedMetadata,
 ) (bool, metadata.ConnectionAuthenticatedMetadata, error) {
+	if h.cfg.RequireGroup == "" {
+		return true, meta, nil
+	}
+	member, err := h.authentik.userInGroup(context.Background(), meta.AuthenticatedUsername, h.cfg.RequireGroup)
+	if err != nil {
+		h.logger.WithLabel("username", message.LabelValue(meta.AuthenticatedUsername)).
+			Error(message.NewMessage(
+				logCodeAuthzError,
+				"Authorization failed for %s: group lookup error: %v",
+				meta.AuthenticatedUsername, err,
+			))
+		return false, meta, err
+	}
+	if !member {
+		h.logger.WithLabel("username", message.LabelValue(meta.AuthenticatedUsername)).
+			WithLabel("group", message.LabelValue(h.cfg.RequireGroup)).
+			Debug(message.NewMessage(
+				logCodeAuthzDenied,
+				"Authorization denied for %s: not a member of group %s",
+				meta.AuthenticatedUsername, h.cfg.RequireGroup,
+			))
+		return false, meta, nil
+	}
 	return true, meta, nil
 }

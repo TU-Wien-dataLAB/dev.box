@@ -10,7 +10,7 @@ backend**. The deployment target is ContainerSSH's **persistent** execution mode
 connection creates a stable per-user pod, later connections exec into that same pod, and
 disconnecting does not delete it. It consists of:
 
-1. **`charts/containerssh/`** — a Helm chart (v2, `containerssh-0.1.8`, `appVersion: 0.6`) that
+1. **`charts/containerssh/`** — a Helm chart (v2, `containerssh-0.1.9`, `appVersion: 0.6`) that
    deploys ContainerSSH itself plus optional extras.
 2. **`config-server/`** — a small Go server implementing the ContainerSSH config webhook protocol
    (built on `go.containerssh.io/containerssh` `config/webhook`), serving **pod templates selected
@@ -35,7 +35,7 @@ Source of truth for ContainerSSH internals: `/Users/matthiasmatt/Documents/Work/
 dev.box/
 ├── AGENTS.md                  ← this file
 ├── charts/containerssh/       ← the Helm chart
-│   ├── Chart.yaml             (name containerssh, v0.1.8, appVersion 0.6)
+│   ├── Chart.yaml             (name containerssh, v0.1.9, appVersion 0.6)
 │   ├── values.yaml            (everything is configurable from here)
 │   ├── README.md
 │   └── templates/
@@ -250,9 +250,9 @@ The rendered config is validated this way after every template change that alter
   `attributes.sshPublicKey` list query with username enforcement disabled. The enrolled value is a
   single-element list containing the canonical comment-free key. Live measurements after the
   exact-string rollout: enrolled key lookup 199 ms; unknown key denial 75 ms; no parsing,
-  fingerprint cache, alternate query, or directory scan. The bundled chart configures only
-  `publicKey`; password and authz webhooks are absent, and the auth server no longer serves
-  `/config` or a group gate.
+  fingerprint cache, alternate query, or directory scan. The bundled chart configures `publicKey`
+  and `authz` (group gate off by default); password authentication is absent, and the auth server
+  no longer serves `/config`.
 
 Remaining before the staged persistent-mode validation:
   1. Implement the persistent-mode contract in the chart/config server: render

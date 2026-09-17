@@ -260,8 +260,8 @@ helm install containerssh . \
 SSH key auth asks authentik one question: **which user has this exact public key?** The bundled
 server performs one exact users query for the string supplied by ContainerSSH against
 `attributes.sshPublicKey`. It exposes ContainerSSH's `/pubkey` webhook plus the interface-required
-`/password` (always denied) and `/authz` (always allow) endpoints. Pod configuration is the
-separate bundled config server's job — this server never serves `/config`.
+`/password` (always denied) and `/authz` (optional authentik group gate) endpoints. Pod
+configuration is the separate bundled config server's job — this server never serves `/config`.
 
 Before enabling it:
 1. build/push the image (repo CI publishes it to `ghcr.io/tu-wien-datalab/dev.box/auth-server`),
@@ -278,10 +278,11 @@ authServer:
   authentik:
     url: https://authentik.example.com
     tokenSecret: authentik-service-token   # existing Secret, key "token"
+  requireGroup: "ssh-users"                # optional post-auth group gate
 ```
 
 When enabled the chart: creates a Secret (from `token`, or reuses `tokenSecret`), deploys the
-server next to ContainerSSH, and auto-wires `auth.publicKey.webhook.url` to its Service
+server next to ContainerSSH, and auto-wires `auth.publicKey/authz.webhook.url` to its Service
 (`http://<release>-auth-server.<ns>.svc.cluster.local:8080`). Authenticate with an enrolled key;
 the requested SSH username selects the pod template, while authenticated metadata records the
 key's authentik owner:

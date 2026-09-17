@@ -41,6 +41,7 @@ const (
 	envAuthToken     = "AUTHENTIK_TOKEN"
 	envAuthTokenFile = "AUTHENTIK_TOKEN_FILE"
 	envInsecure      = "AUTHENTIK_INSECURE_SKIP_VERIFY"
+	envRequireGroup  = "AUTH_SERVER_REQUIRE_GROUP"
 )
 
 func main() {
@@ -77,9 +78,14 @@ func main() {
 		"SSH key lookup: one exact attributes.%s list match",
 		attrSSHPublicKey,
 	))
+	// ---- auth behaviour ---------------------------------------------------
+	authCfg := authConfig{
+		RequireGroup: env(envRequireGroup, ""),
+	}
+
 	// ---- server + service lifecycle --------------------------------------
 	handler := authWebhook.NewHandler(
-		&authHandler{authentik: authentikClient, logger: logger},
+		&authHandler{authentik: authentikClient, cfg: authCfg, logger: logger},
 		logger,
 	)
 	srv, err := containersshHTTP.NewServer(

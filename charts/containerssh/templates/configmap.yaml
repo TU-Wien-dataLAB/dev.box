@@ -91,7 +91,7 @@ data:
     {{- end }}
     {{- $passwordURL := .Values.auth.password.webhook.url }}
     {{- $publicKeyURL := default $authURL .Values.auth.publicKey.webhook.url }}
-    {{- $authzURL := .Values.auth.authz.webhook.url }}
+    {{- $authzURL := default $authURL .Values.auth.authz.webhook.url }}
     {{- if not (or $passwordURL $publicKeyURL) }}
     {{- fail "configure at least one authentication method: enable authServer or set auth.password.webhook.url or auth.publicKey.webhook.url" }}
     {{- end }}

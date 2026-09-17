@@ -22,11 +22,17 @@ const (
 )
 
 // authentikUser is the subset of authentik's User serializer needed to decide
-// public-key authentication. Attributes are retained for the in-memory API test.
+// public-key authentication. Attributes and group membership support the
+// handler and the in-memory API test.
 type authentikUser struct {
 	Username   string                 `json:"username"`
 	IsActive   bool                   `json:"is_active"`
 	Attributes map[string]interface{} `json:"attributes"`
+	Groups     []authentikGroup       `json:"groups_obj"`
+}
+
+type authentikGroup struct {
+	Name string `json:"name"`
 }
 
 type paginatedUsers struct {
@@ -70,6 +76,18 @@ func (c *authentikClient) lookupUser(
 		return nil, nil
 	}
 	return &page.Results[0], nil
+}
+
+// userInGroup reports whether the exact username belongs to the named group.
+func (c *authentikClient) userInGroup(ctx context.Context, username, group string) (bool, error) {
+	page, err := c.listUsers(ctx, url.Values{
+		"username":       {username},
+		"groups_by_name": {group},
+	})
+	if err != nil {
+		return false, err
+	}
+	return page.Pagination.Count > 0, nil
 }
 
 func (c *authentikClient) listUsers(ctx context.Context, values url.Values) (*paginatedUsers, error) {

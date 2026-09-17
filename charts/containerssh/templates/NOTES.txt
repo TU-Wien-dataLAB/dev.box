@@ -39,7 +39,7 @@ secures the transport itself).
 {{- if .Values.authServer.enabled }}
 2a. Bundled authentik-backed auth server deployed at
     {{ include "containerssh.fullname" . }}-auth-server.{{ .Release.Namespace }}:8080 and
-    auto-wired to auth.publicKey.webhook.url. SSH in with an authentik
+    auto-wired to auth.publicKey/authz.webhook.url. SSH in with an authentik
     key owner whose exact ContainerSSH public-key string is stored in attributes.sshPublicKey.
     The SSH username selects the pod template:
     ssh -p {{ .Values.service.port }} <pod-template>@localhost

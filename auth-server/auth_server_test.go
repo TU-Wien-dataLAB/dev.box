@@ -72,10 +72,12 @@ func (m *mockAuthentik) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	m.getRequests++
 
 	var filter map[string]interface{}
-	if err := json.Unmarshal([]byte(r.URL.Query().Get("attributes")), &filter); err != nil {
-		m.t.Errorf("invalid attributes filter: %v", err)
-		w.WriteHeader(http.StatusBadRequest)
-		return
+	if raw := r.URL.Query().Get("attributes"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &filter); err != nil {
+			m.t.Errorf("invalid attributes filter: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 	}
 	filtered := []authentikUser{}
 	for _, user := range m.users {
@@ -86,6 +88,21 @@ func (m *mockAuthentik) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if string(storedJSON) != string(expectedJSON) {
 				match = false
 				break
+			}
+		}
+		if name := r.URL.Query().Get("username"); name != "" && user.Username != name {
+			match = false
+		}
+		if group := r.URL.Query().Get("groups_by_name"); group != "" {
+			member := false
+			for _, g := range user.Groups {
+				if g.Name == group {
+					member = true
+					break
+				}
+			}
+			if !member {
+				match = false
 			}
 		}
 		if match {
@@ -314,6 +331,34 @@ func TestOnPubKeyWithKeyAttribute(t *testing.T) {
 		)
 		if err != nil || !ok {
 			t.Fatalf("expected commented exact match, got ok=%v err=%v", ok, err)
+		}
+	})
+}
+
+func TestOnAuthorizationGroupGate(t *testing.T) {
+	key := newTestKey(t)
+	alice := userWithKey("alice", key, true)
+	alice.Groups = []authentikGroup{{Name: "ssh-users"}}
+	newHandler := func(group string) *authHandler {
+		return &authHandler{
+			authentik: newMockClient(t, &mockAuthentik{t: t, users: []authentikUser{alice}}),
+			cfg:       authConfig{RequireGroup: group},
+			logger:    testLogger(t),
+		}
+	}
+	meta := metadata.NewTestAuthenticatingMetadata("pod-template").Authenticated("alice")
+
+	t.Run("member of the required group is allowed", func(t *testing.T) {
+		ok, _, err := newHandler("ssh-users").OnAuthorization(meta)
+		if err != nil || !ok {
+			t.Fatalf("expected group allow, got ok=%v err=%v", ok, err)
+		}
+	})
+
+	t.Run("non-member is denied", func(t *testing.T) {
+		ok, _, err := newHandler("admins").OnAuthorization(meta)
+		if ok || err != nil {
+			t.Fatalf("expected group deny, got ok=%v err=%v", ok, err)
 		}
 	})
 }

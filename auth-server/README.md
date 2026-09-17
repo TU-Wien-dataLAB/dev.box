@@ -47,7 +47,7 @@ owner.
 | --- | --- |
 | `POST /pubkey` | authentik-backed SSH public-key authentication |
 | `POST /password` | always denied; required only by ContainerSSH's handler interface |
-| `POST /authz` | always allow; required only by ContainerSSH's handler interface |
+| `POST /authz` | optional authentik group gate (`AUTH_SERVER_REQUIRE_GROUP`) |
 
 The server uses ContainerSSH's official `auth/webhook` package. Pod configuration is exclusively
 the separate config-server's responsibility.
@@ -61,6 +61,7 @@ the separate config-server's responsibility.
 | `AUTHENTIK_URL` | **required** | authentik base URL |
 | `AUTHENTIK_TOKEN` / `AUTHENTIK_TOKEN_FILE` | **required** | token with read access to users; `_FILE` wins |
 | `AUTHENTIK_INSECURE_SKIP_VERIFY` | `false` | skip TLS verification; development only |
+| `AUTH_SERVER_REQUIRE_GROUP` | — | optional authentik group required after authentication |
 
 ## Build and test
 
@@ -92,8 +93,8 @@ authServer:
     tokenSecret: containerssh-authentik-token
 ```
 
-The chart deploys the webhook and wires only ContainerSSH's public-key webhook URL to it. The
-authentik token only needs read access to users.
+The chart deploys the webhook and wires ContainerSSH's public-key and authorization webhook URLs
+to it. The authentik token only needs read access to users.
 
 ## Security properties
 
