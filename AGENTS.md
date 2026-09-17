@@ -233,11 +233,11 @@ The rendered config is validated this way after every template change that alter
 - Target cluster context: **`container-ssh`** (created; control plane reachable).
   Current default context is `ai-platform` — pass `--kube-context container-ssh` explicitly
   (helm) / `--context container-ssh` (kubectl).
-- Helm release `containerssh` revision 9 is **deployed** in namespace `containerssh` with chart
-  `0.1.5`; ContainerSSH, auth-server, and config-server are all Ready. Ingress remains disabled
+- Helm release `containerssh` revision 10 is **deployed** in namespace `containerssh` with chart
+  `0.1.6`; ContainerSSH, auth-server, and config-server are all Ready. Ingress remains disabled
   (ClusterIP + local port-forward).
-- The auth-server is pinned to immutable tag `sha-d2442ea` (image digest
-  `sha256:98db09b955e1b592824a37b547f0e7c47cffcd01ad14897149c3cab28187cf14`); the config-server
+- The auth-server is pinned to immutable tag `sha-562f105` (image digest
+  `sha256:8021da330362b1803092ee0126501827bc589b336ef9b175285278a5ab804773`); the config-server
   still uses `main`. The authentik read token and stable host key are mounted from existing Secrets
   (`containerssh-authentik-token`, `containerssh-host-key`).
 - A real connection-mode SSH check passed on 2026-09-17:
@@ -247,8 +247,9 @@ The rendered config is validated this way after every template change that alter
 - The live `ubuntu` template is metadata-only and therefore retains
   `containerssh/containerssh-guest-image`. Authentication uses one exact
   `attributes.sshPublicKey` list query with username enforcement disabled. The enrolled value is a
-  single-element list containing the canonical comment-free key. Live measurements: enrolled key
-  lookup 78 ms; unknown key denial 61 ms; no full-directory fallback scan.
+  single-element list containing the canonical comment-free key. Live measurements after the
+  simplified rollout: enrolled key lookup 145 ms; unknown key denial 61 ms; no fingerprint cache,
+  alternate query, or directory scan.
 
 Remaining before the staged persistent-mode validation:
   1. Implement the persistent-mode contract in the chart/config server: render
