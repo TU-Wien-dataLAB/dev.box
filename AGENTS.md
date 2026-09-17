@@ -237,21 +237,22 @@ The rendered config is validated this way after every template change that alter
 - Target cluster context: **`container-ssh`** (created; control plane reachable).
   Current default context is `ai-platform` — pass `--kube-context container-ssh` explicitly
   (helm) / `--context container-ssh` (kubectl).
-- Helm release `containerssh` revision 8 is **deployed** in namespace `containerssh` with chart
+- Helm release `containerssh` revision 9 is **deployed** in namespace `containerssh` with chart
   `0.1.5`; ContainerSSH, auth-server, and config-server are all Ready. Ingress remains disabled
   (ClusterIP + local port-forward).
-- GHCR images for both bundled servers are published and deployed from their `main` tags. The
-  authentik read token and stable host key are mounted from existing Secrets
+- The auth-server is pinned to immutable tag `sha-d2442ea` (image digest
+  `sha256:98db09b955e1b592824a37b547f0e7c47cffcd01ad14897149c3cab28187cf14`); the config-server
+  still uses `main`. The authentik read token and stable host key are mounted from existing Secrets
   (`containerssh-authentik-token`, `containerssh-host-key`).
 - A real connection-mode SSH check passed on 2026-09-17:
   `ssh -i ~/.ssh/slurm_tu_wien -o IdentitiesOnly=yes -p 2222 ubuntu@localhost 'printf READY'`.
   It crossed ContainerSSH → auth-server → production authentik → config-server → guest pod and
   returned `READY`; the connection pod was deleted after disconnect as expected.
 - The live `ubuntu` template is metadata-only and therefore retains
-  `containerssh/containerssh-guest-image`. The revision-8 auth-server image still uses the old
-  `attributes.sshPublicKey` scan fallback with username enforcement disabled. Current source has
-  removed that fallback; do not roll out its next image until the enrolled value is normalized to a
-  single-element list containing the canonical comment-free key.
+  `containerssh/containerssh-guest-image`. Authentication uses one exact
+  `attributes.sshPublicKey` list query with username enforcement disabled. The enrolled value is a
+  single-element list containing the canonical comment-free key. Live measurements: enrolled key
+  lookup 78 ms; unknown key denial 61 ms; no full-directory fallback scan.
 
 Remaining before the staged persistent-mode validation:
   1. Implement the persistent-mode contract in the chart/config server: render
@@ -259,11 +260,10 @@ Remaining before the staged persistent-mode validation:
      DNS-1123 `metadata.name` from the canonical authenticated user (`authenticatedUsername`), stop
      relying on `generateName`, define explicit deletion/retention behavior, and add
      disconnect/reconnect coverage.
-  2. Normalize the enrolled `attributes.sshPublicKey` value and deploy the strict exact-lookup
-     auth-server image; then settle the SSH username vs canonical authentik identity policy before
-     enabling username enforcement. The fingerprint index remains an alternative exact lookup.
-  3. Pin both bundled images to immutable SHA tags and run the remaining negative, policy, and
-     fail-closed stages in `tests/cluster-deployment-spec.md`.
+  2. Settle the SSH username vs canonical authentik identity policy before enabling username
+     enforcement. The fingerprint index remains an alternative exact lookup.
+  3. Pin the config-server image to an immutable SHA tag and run the remaining negative, policy,
+     and fail-closed stages in `tests/cluster-deployment-spec.md`.
   4. Optional, later: `ingress.enabled=true` + the one-time Traefik TCP entrypoint/port setup
      (see values.yaml `ingress`, NOTES.txt).
 
