@@ -1,159 +1,109 @@
-# auth-server — authentik-backed SSH key authentication for ContainerSSH
+# auth-server — authentik-backed SSH key authentication
 
-A Go server implementing the ContainerSSH **authentication webhook** protocol, backed by
-authentik for SSH **public-key** lookups. It is built on the official module
-(`go.containerssh.io/containerssh`, `auth/webhook` + `config/webhook` packages) and mirrors the
-reference server `cmd/containerssh-testauthconfigserver/main.go` — see
-[auth-server/spec.md](spec.md) for the design rationale and the authentik API research behind it.
+A small ContainerSSH authentication webhook that answers one question:
 
-It answers "given an SSH public key, which authentik user owns it?" — something authentik does
-**not** do natively (there is no SSH key field on users; see spec §1). The server canonicalizes the
-key, fingerprints it, and looks the fingerprint up in the user's `attributes` (spec §4):
+> Which authentik user owns this SSH public key?
 
-```
-ssh alice@host ──present key──▶ ContainerSSH ──POST /pubkey──▶ auth-server
-                                                                 │ canonicalize (ssh.ParseAuthorizedKey)
-                                                                 │ fingerprint (ssh.FingerprintSHA256)
-                                                                 ▼
-                                     GET /api/v3/core/users/?attributes={"ssh_key_fingerprint":"SHA256:..."}
-                                                                 │ Bearer <service token>
-                                                                 ▼
-                                    authentik  → 0 = deny / 1 = authenticate as that user / >1 = integrity error
+For `POST /pubkey`, it validates and canonicalizes the presented key, then performs one exact
+query against authentik:
+
+```http
+GET /api/v3/core/users/?attributes={"sshPublicKey":["ssh-ed25519 AAAA..."]}
+Authorization: Bearer <service-token>
 ```
 
-## Endpoints (one listener, spec §2/§6)
+The JSON query is URL-encoded on the wire. There is no fingerprint cache, background sync, fallback
+query, or directory scan.
+
+## Public-key contract
+
+Each authentik user may have one key in `attributes.sshPublicKey`. The value must be a
+single-element JSON list containing the canonical public key:
+
+```json
+{
+  "sshPublicKey": ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA..."]
+}
+```
+
+Canonical means `type + base64` only. Optional comments such as `alice@laptop` are not stored because
+SSH clients do not transmit comments during authentication. If the authentik settings field accepts
+a pasted `.pub` line, its write path must strip the optional comment before saving.
+
+Authentication behavior:
+
+- exactly one matching active user: authenticate as that authentik user;
+- zero or multiple users: deny cleanly;
+- malformed key: deny cleanly;
+- authentik/network failure: return HTTP 500 so ContainerSSH fails closed;
+- with username enforcement enabled, the requested SSH username must match the owner.
+
+## Endpoints
 
 | Path | Meaning |
 | --- | --- |
-| `POST /password` | username/password auth — **disabled by default**; opt-in test allowlist only |
-| `POST /pubkey` | SSH public key auth — the authentik fingerprint lookup |
-| `POST /authz` | post-auth authorization — optional group gate (`AUTH_SERVER_REQUIRE_GROUP`) |
-| `POST /config` | returns an empty config → ContainerSSH runs its base config unchanged |
-| (any other) | `404` |
+| `POST /pubkey` | authentik-backed SSH public-key authentication |
+| `POST /password` | disabled by default; optional unverified test allowlist |
+| `POST /authz` | optional authentik group gate |
+| `POST /config` | empty config; ContainerSSH retains its base configuration |
 
-## How the key lookup works
-
-1. Parse the presented key: `ssh.ParseAuthorizedKey([]byte(publicKey.PublicKey))`.
-2. Fingerprint it canonically: `ssh.FingerprintSHA256(key)` → `"SHA256:..."`.
-   (ContainerSSH hands us the key already in `ssh.MarshalAuthorizedKey` form — comment-free.)
-3. `GET /api/v3/core/users/?attributes={"ssh_key_fingerprint":"SHA256:..."}` (URL-encoded JSON,
-   `Authorization: Bearer <token>`) — an **exact scalar match** on the stored attribute.
-4. 0 users → deny; exactly 1 → verify username binding then authenticate as the **owner**;
-   >1 → integrity error (fingerprints must be unique) → HTTP 500 so ContainerSSH retries.
-5. Infrastructure errors (5xx/network) → error → HTTP 500; ContainerSSH keeps retrying until
-   its per-method `authTimeout`.
-
-The default attribute is `ssh_key_fingerprint`; the raw key lives in `ssh_public_key` (set by the user via
-the authentik settings-flow prompt, or by a provisioner — see spec §5). Both are **derived caches**:
-users keep entering keys, and the background sync (below) keeps the fingerprint in sync.
-
-### Alternative lookup attribute (`AUTH_SERVER_KEY_ATTRIBUTE`)
-
-The lookup attribute is configurable, which helps when your authentik users keep their keys in a
-different attribute — e.g. the raw `sshPublicKey`:
-
-- unset / `ssh_key_fingerprint` (default): exact-match filter on the derived fingerprint cache —
-  one cheap API call. The production path.
-- any other value (e.g. `sshPublicKey`): the attribute must be a **single-element JSON list**
-  containing the canonical armored key (`type + base64`, no comment). The server performs one exact
-  `attributes` filter query using that list. Exactly one result authenticates; zero or multiple
-  results deny cleanly. Scalar values, comments, extra whitespace, and multi-key lists deliberately
-  do not match. There is no full-directory fallback scan.
-- The authentik users API has no per-attribute query parameter (e.g. `?sshPublicKey=…`): unknown
-  query params are silently ignored and return the full directory. The documented filter is the
-  JSON `attributes` parameter (verified against authentik 2026.5.2).
+The server uses ContainerSSH's official `auth/webhook` and `config/webhook` packages.
 
 ## Environment
 
 | Variable | Default | Description |
 | --- | --- | --- |
 | `CONTAINERSSH_LISTEN` | `0.0.0.0:8080` | Listen address |
-| `CONTAINERSSH_LOG_LEVEL` | `6` | Syslog-style: `7` debug, `6` info, `5` notice, `4` warning, `3` error, `2` crit |
-| `CONTAINERSSH_TLS_CERT` | — | Server certificate (file path or PEM) → enables HTTPS |
-| `CONTAINERSSH_TLS_KEY` | — | Server private key (file path or PEM) |
-| `CONTAINERSSH_TLS_CLIENTCA` | — | CA to verify clients (enables mTLS) |
-| `AUTHENTIK_URL` | **required** | authentik base URL, e.g. `https://authentik.example.com` |
-| `AUTHENTIK_TOKEN` / `AUTHENTIK_TOKEN_FILE` | **required** | service-account token with **view users** (each other; `_FILE` wins, trims trailing newline) |
-| `AUTHENTIK_WRITE_TOKEN` / `AUTHENTIK_WRITE_TOKEN_FILE` | falls back to read token | optional separate token with **edit users** for the sync; keep it separate for least privilege |
-| `AUTHENTIK_CA_FILE` | — | custom CA PEM (file path or literal) for a self-signed authentik |
-| `AUTHENTIK_INSECURE_SKIP_VERIFY` | `false` | `1/true` → skip TLS verification (dev only) |
-| `AUTH_SERVER_ENFORCE_USERNAME` | `true` | require `ssh <user>@host` to equal the authentik **owner** of the key (prevents impersonation with a stolen key + known username) |
-| `AUTH_SERVER_PASSWORD_USERS` | — | comma-separated usernames allowed to use password auth (any password — **test/break-glass only, not verified**) |
-| `AUTH_SERVER_REQUIRE_GROUP` | — | group name; when set, `OnAuthorization` demands membership before session starts |
-| `AUTH_SERVER_KEY_ATTRIBUTE` | `ssh_key_fingerprint` | authentik attribute to search; custom raw-key attributes must be a single-element list containing the canonical key (see above) |
-| `AUTH_SERVER_SYNC_INTERVAL` | — (off) | normalizing sync interval, e.g. `30s`, `5m` (spec §5.3 option (a)) |
-| `AUTH_SERVER_SYNC_WRITE` | `true` | `false` runs the sync in dry-run (report only, no PATCHes) |
+| `CONTAINERSSH_LOG_LEVEL` | `6` | Syslog style: `7` debug through `2` critical |
+| `CONTAINERSSH_TLS_CERT` | — | Server certificate path or PEM; enables HTTPS |
+| `CONTAINERSSH_TLS_KEY` | — | Server private-key path or PEM |
+| `CONTAINERSSH_TLS_CLIENTCA` | — | CA used to verify clients; enables mTLS |
+| `AUTHENTIK_URL` | **required** | authentik base URL |
+| `AUTHENTIK_TOKEN` / `AUTHENTIK_TOKEN_FILE` | **required** | token with read access to users; `_FILE` wins |
+| `AUTHENTIK_CA_FILE` | — | custom CA path or PEM |
+| `AUTHENTIK_INSECURE_SKIP_VERIFY` | `false` | skip TLS verification; development only |
+| `AUTH_SERVER_ENFORCE_USERNAME` | `true` | require requested SSH username to equal the key owner |
+| `AUTH_SERVER_PASSWORD_USERS` | — | test-only usernames allowed with any password |
+| `AUTH_SERVER_REQUIRE_GROUP` | — | optional authentik group required after authentication |
 
-> Note: wildcard/`_FILE` tokens are read with no trailing newline via `strings.TrimSpace`.
-
-## The normalizing + fingerprint sync (spec §5.3)
-
-Users paste keys in *My settings* — freeform, with comments, maybe line-wrapped. That is exactly the
-fragile case the API's **exact** `attributes` filter can't match reliably. So, on
-`AUTH_SERVER_SYNC_INTERVAL`, the server walks all users and for anyone with
-`attributes.ssh_public_key` set:
-
-- parses the armored key, drops comments/whitespace, re-marshals a canonical line;
-- computes `ssh.FingerprintSHA256`;
-- `PATCH /api/v3/core/users/{id}/` (id = integer `pk`) to store both `attributes.ssh_public_key`
-  (canonical) and `attributes.ssh_key_fingerprint` — only when they changed;
-- flags (does not write) a fingerprint shared by **two different users** — key uniqueness violation.
-
-`OnPubKey` stays a fast exact-match query against the derived fingerprint attribute. The sync is
-*optional*: with the read token able to edit users it persists; with a read-only token
-(or `AUTH_SERVER_SYNC_WRITE=0`) it just reports what it would change. Never deletes attributes.
-
-## Build & run locally
+## Build and test
 
 ```bash
-go build -o auth-server .          # or: go run .
-go test ./...                      # unit tests against an in-memory authentik mock
+go build ./...
+go vet ./...
+go test -race ./...
+```
 
-# point it at your authentik with a service token:
+Run locally:
+
+```bash
 AUTHENTIK_URL=https://authentik.example.com \
 AUTHENTIK_TOKEN_FILE=$(pwd)/token \
 CONTAINERSSH_LISTEN=127.0.0.1:8080 \
-CONTAINERSSH_LOG_LEVEL=7 \
-AUTH_SERVER_SYNC_INTERVAL=30s ./auth-server
-
-# simulate SSH key auth:
-curl -s -X POST http://127.0.0.1:8080/pubkey -H 'Content-Type: application/json' \
-  -d '{"username":"alice","connectionId":"c1","remoteAddress":"10.0.0.1:43210",
-       "clientVersion":"SSH-2.0-OpenSSH_9.6",
-       "publicKey":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... "}'
+./auth-server
 ```
 
-## Authentik prerequisites
+The repository workflow `.github/workflows/auth-server-image.yml` publishes
+`ghcr.io/tu-wien-datalab/dev.box/auth-server` on pushes to the default branch.
 
-- A **service account token** with `authentik_api_view`/read on users (plus edit if the sync writes).
-- Users have `attributes.ssh_public_key` (+ derived `ssh_key_fingerprint`). Two ways:
-  1. **Self-service:** the `default-user-settings-flow` Prompt writing to
-     `attributes.ssh_public_key` (spec §5.2) — users manage their own key.
-  2. **Provisioner:** any script `PATCH`es the attributes directly.
-- Optional group for the authz gate: create the group and add members.
+## Deploy with the Helm chart
 
-## Deploy in Kubernetes
+```yaml
+authServer:
+  enabled: true
+  authentik:
+    url: https://authentik.example.com
+    tokenSecret: containerssh-authentik-token
+```
 
-Enable it from the ContainerSSH chart (`authServer.enabled=true`) — it deploys this server as a
-sibling Deployment + Service, creates a Secret for the authentik token, and auto-wires
-`auth.password.webhook.url`, `auth.publicKey.webhook.url` and `auth.authz.webhook.url` at
-`http://<release>-auth-server.<ns>.svc.cluster.local:8080` (spec §3). See `charts/containerssh/`.
+The chart deploys the webhook and wires ContainerSSH's password, public-key, and authorization
+webhook URLs to it. The authentik token only needs read access to users.
 
-The repo CI (`.github/workflows/auth-server-image.yml`) builds this directory and publishes it to
-`ghcr.io/tu-wien-datalab/dev.box/auth-server` on push to `main`; the chart's `authServer.image`
-defaults to that image. Pull it into the cluster like the config-server image (public package or an
-`imagePullSecret`).
+## Security properties
 
-For a standalone deployment: build & push the image, then run it with the env vars above and point
-ContainerSSH's auth sections at it.
-
-## Security notes
-
-- Read-only against authentik for auth (only the optional sync writes) → the API token is exposed
-  only to this pod.
-- Fail-closed: if authentik is unreachable, `OnPubKey` returns 500 and ContainerSSH denies the
-  connection rather than allowing it.
-- Firewall the server: ContainerSSH → HTTP(S) (add mTLS via the `CONTAINERSSH_TLS_*` variables +
-  chart `authServer.cacert`/`cert`/`key`), no inbound from the internet.
-- Password auth is off by default and cannot verify passwords against authentik — it exists solely
-  as an explicitly-named testing escape hatch. Keep it off in production.
+- The server is read-only against authentik.
+- Authentication fails closed on API and network failures.
+- Malformed, unknown, duplicate, and inactive-user keys are denied.
+- Full public keys are not written to decision or error logs.
+- The authenticated ContainerSSH identity is the authentik owner, even when requested-username
+  enforcement is disabled.

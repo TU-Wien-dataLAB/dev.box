@@ -13,15 +13,7 @@ auth.*.webhook.url values are auto-wired to this Service in configmap.yaml.
 {{- $readSecret = .Values.authServer.authentik.tokenSecret }}
 {{- $readKey = default "token" .Values.authServer.authentik.tokenSecretKey }}
 {{- end }}
-{{- /* write token is only wired when explicitly configured */}}
-{{- $writeConfigured := or .Values.authServer.authentik.writeToken .Values.authServer.authentik.writeTokenSecret }}
-{{- $writeSecret := $authFullname }}
-{{- $writeKey := "write-token" }}
-{{- if .Values.authServer.authentik.writeTokenSecret }}
-{{- $writeSecret = .Values.authServer.authentik.writeTokenSecret }}
-{{- $writeKey = default "write-token" .Values.authServer.authentik.writeTokenSecretKey }}
-{{- end }}
-{{- if and (not .Values.authServer.authentik.tokenSecret) (or .Values.authServer.authentik.token .Values.authServer.authentik.writeToken) }}
+{{- if and (not .Values.authServer.authentik.tokenSecret) .Values.authServer.authentik.token }}
 ---
 apiVersion: v1
 kind: Secret
@@ -31,12 +23,7 @@ metadata:
     {{- include "containerssh.labels" . | nindent 4 }}
     app.kubernetes.io/component: auth-server
 stringData:
-  {{- with .Values.authServer.authentik.token }}
-  token: {{ . | quote }}
-  {{- end }}
-  {{- with .Values.authServer.authentik.writeToken }}
-  write-token: {{ . | quote }}
-  {{- end }}
+  token: {{ .Values.authServer.authentik.token | quote }}
 {{- end }}
 ---
 apiVersion: apps/v1
@@ -88,10 +75,6 @@ spec:
               value: {{ required "authServer.authentik.url is required when authServer.enabled" .Values.authServer.authentik.url | quote }}
             - name: AUTHENTIK_TOKEN_FILE
               value: /var/run/secrets/dev.box/token
-            {{- if $writeConfigured }}
-            - name: AUTHENTIK_WRITE_TOKEN_FILE
-              value: /var/run/secrets/dev.box/write-token
-            {{- end }}
             - name: AUTH_SERVER_ENFORCE_USERNAME
               value: {{ .Values.authServer.enforceUsername | quote }}
             {{- with .Values.authServer.requireGroup }}
@@ -102,19 +85,9 @@ spec:
             - name: AUTH_SERVER_PASSWORD_USERS
               value: {{ . | quote }}
             {{- end }}
-            {{- with .Values.authServer.syncInterval }}
-            - name: AUTH_SERVER_SYNC_INTERVAL
-              value: {{ . | quote }}
-            {{- end }}
-            - name: AUTH_SERVER_SYNC_WRITE
-              value: {{ .Values.authServer.syncWrite | quote }}
             {{- if .Values.authServer.authentik.insecureSkipVerify }}
             - name: AUTHENTIK_INSECURE_SKIP_VERIFY
               value: "true"
-            {{- end }}
-            {{- with .Values.authServer.authentik.keyAttribute }}
-            - name: AUTH_SERVER_KEY_ATTRIBUTE
-              value: {{ . | quote }}
             {{- end }}
           readinessProbe:
             tcpSocket:
@@ -133,12 +106,6 @@ spec:
               mountPath: /var/run/secrets/dev.box/token
               subPath: token
               readOnly: true
-            {{- if $writeConfigured }}
-            - name: auth-write-token
-              mountPath: /var/run/secrets/dev.box/write-token
-              subPath: write-token
-              readOnly: true
-            {{- end }}
       volumes:
         - name: auth-read-token
           secret:
@@ -146,14 +113,6 @@ spec:
             items:
               - key: {{ $readKey }}
                 path: token
-        {{- if $writeConfigured }}
-        - name: auth-write-token
-          secret:
-            secretName: {{ $writeSecret }}
-            items:
-              - key: {{ $writeKey }}
-                path: write-token
-        {{- end }}
 ---
 apiVersion: v1
 kind: Service

@@ -40,8 +40,7 @@ secures the transport itself).
 2a. Bundled authentik-backed auth server deployed at
     {{ include "containerssh.fullname" . }}-auth-server.{{ .Release.Namespace }}:8080 and
     auto-wired to auth.password/publicKey/authz.webhook.url. SSH in with the authentik
-    user whose key is enrolled (fingerprint must be synced for new keys — see
-    authServer.syncInterval):
+    user whose canonical public key is stored in attributes.sshPublicKey:
     ssh -p {{ .Values.service.port }} <authentik-username>@localhost
     If the pod is not Ready, check authServer.authentik.url/token and that the image
     was built/pushed (see auth-server README).

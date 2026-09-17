@@ -256,9 +256,9 @@ configServer:
 # as a sibling Deployment + Service next to ContainerSSH and auto-wires
 # auth.password/pubkey/authz.webhook.url to it. It does the authentik-backed SSH
 # public-key lookup (see auth-server/README.md & auth-server/spec.md): the server
-# fingerprints the presented key and queries authentik's users API for the owner
-# (attributes.ssh_key_fingerprint), denying otherwise. Password auth stays
-# disabled by default on the server (AUTH_SERVER_PASSWORD_USERS empty).
+# canonicalizes the presented key and performs one exact users API query against
+# attributes.sshPublicKey, denying unless exactly one owner is returned. Password
+# auth stays disabled by default (AUTH_SERVER_PASSWORD_USERS empty).
 #
 # Required before SSH works: an authentik URL + a service-account token with read
 # access to users (the image must also be built/pushed — see auth-server README).
@@ -281,21 +281,8 @@ authServer:
     token: ""
     tokenSecret: ""                 # existing Secret (takes precedence over token)
     tokenSecretKey: "token"         # key inside that Secret
-    # Optional separate token with write (edit) access to users for the
-    # fingerprint-sync. Falls back to the read token when empty. A write token is
-    # mounted/used only when one is configured.
-    writeToken: ""
-    writeTokenSecret: ""
-    writeTokenSecretKey: "token"
     # AUTHENTIK_INSECURE_SKIP_VERIFY — dev only.
     insecureSkipVerify: false
-    # AUTH_SERVER_KEY_ATTRIBUTE: which authentik user attribute the presented
-    # SSH key is looked up by. Empty = the derived fingerprint cache
-    # attributes.ssh_key_fingerprint (spec default: one exact-match API call).
-    # Set to e.g. "sshPublicKey" for one exact raw-key lookup. The attribute
-    # must be a single-element JSON list containing the canonical key
-    # (type + base64, no comment); zero or multiple matches deny authentication.
-    keyAttribute: ""
   # AUTH_SERVER_ENFORCE_USERNAME: require ssh <user>@host to equal the authentik
   # owner of the key (prevents impersonation).
   enforceUsername: true
@@ -305,11 +292,6 @@ authServer:
   # AUTH_SERVER_PASSWORD_USERS: comma-separated usernames allowed password auth
   # (ANY password — test/break-glass only, unverified). Empty = password auth off.
   passwordUsers: ""
-  # AUTH_SERVER_SYNC_INTERVAL: normalizing+fingerprint sync interval, e.g. "5m".
-  # Empty = sync disabled. See auth-server/README.md §The normalizing sync.
-  syncInterval: ""
-  # AUTH_SERVER_SYNC_WRITE: false = sync runs dry-run (report only).
-  syncWrite: true
   resources:
     limits:
       cpu: 100m

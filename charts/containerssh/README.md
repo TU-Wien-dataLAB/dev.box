@@ -188,9 +188,7 @@ See `values.yaml` for the complete, annotated list. Highlights:
 | `kubernetes.podTemplates` | `[]` | Pod templates selected by SSH username (template `name` = username) |
 | `authServer.authentik.url` | `""` | authentik base URL (required when `authServer.enabled`) |
 | `authServer.authentik.token` | `""` | authentik service token (chart creates a Secret) |
-| `authServer.authentik.tokenSecret` | `""` | existing Secret with the token (preferred over `token`) |
-| `authServer.authentik.keyAttribute` | `""` | authentik attribute to search; `sshPublicKey` uses one exact query for a single-element list containing the canonical key (default: derived `ssh_key_fingerprint` index) |
-| `authServer.syncInterval` | `""` | normalizing+fingerprint sync interval, e.g. `5m` |
+| `authServer.authentik.tokenSecret` | `""` | existing Secret with the read-only token (preferred over `token`) |
 
 ## Per-username pod templates
 
@@ -259,17 +257,17 @@ helm install containerssh . \
 
 ## Bundled authentik auth server (`authServer.enabled`)
 
-SSH key auth for this setup is a lookup call only authentik's API can serve: **given a public key,
-find the user**. The bundled auth server (source in `dev.box/auth-server`, design in
-`auth-server/spec.md`) implements that against authentik by fingerprinting the presented key and
-querying the users API for the owner (`attributes.ssh_key_fingerprint`). It talks the ContainerSSH
-`auth/webhook` protocol and exposes `/pubkey` (plus `/password`, `/authz`, `/config`).
+SSH key auth asks authentik one question: **which user has this exact public key?** The bundled
+server canonicalizes the presented key to `type + base64` and performs one exact users query against
+`attributes.sshPublicKey`. It exposes ContainerSSH's `/pubkey` webhook plus the protocol-complete
+`/password`, `/authz`, and `/config` endpoints.
 
 Before enabling it:
 1. build/push the image (repo CI publishes it to `ghcr.io/tu-wien-datalab/dev.box/auth-server`),
-2. create an authentik **service account token** with read access to users, and
-3. make sure users have `attributes.ssh_public_key` set (self-service Prompt in the authentik
-   settings flow, or a provisioner) — new keys need a sync/fingerprint pass (see `authServer.syncInterval`).
+2. create an authentik service-account token with read access to users, and
+3. store each user's key as a single-element `attributes.sshPublicKey` list. The key must be
+   canonical (`type + base64`, no comment); the authentik settings write path must normalize pasted
+   `.pub` lines before saving.
 
 Example `values.yaml`:
 
@@ -279,8 +277,7 @@ authServer:
   authentik:
     url: https://authentik.example.com
     tokenSecret: authentik-service-token   # existing Secret, key "token"
-  syncInterval: 5m          # fingerprint free-form keys in the background
-  requireGroup: "ssh-users" # optional post-auth group gate
+  requireGroup: "ssh-users"                # optional post-auth group gate
 ```
 
 When enabled the chart: creates a Secret (from `token`, or reuses `tokenSecret`), deploys the
@@ -302,11 +299,9 @@ See `auth-server/README.md` for all env knobs and the lookup flow.
   auth request errors — authentik must be reachable from this pod.
 - **Password stays off** on the server by default; the `AUTH_SERVER_PASSWORD_USERS` escape hatch
   (`authServer.passwordUsers`) grants logins with an unverified password — test/break-glass only.
-- **Raw-key equality is strict**: with `authServer.authentik.keyAttribute=sshPublicKey`, the stored
-  value must be a single-element list containing `type + base64` without a comment. Zero or multiple
-  exact matches deny cleanly; there is no directory scan.
-- **Key uniqueness is your contract**: one fingerprint may only ever belong to one user; the sync
-  flags (and refuses to write) duplicates.
+- **Public-key equality is strict**: `attributes.sshPublicKey` must be a single-element list
+  containing `type + base64` without a comment. Zero or multiple exact matches deny cleanly; there
+  is no alternate query or directory scan.
 
 ## Security guidance (from the reference)
 

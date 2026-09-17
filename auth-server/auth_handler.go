@@ -81,22 +81,15 @@ func (h *authHandler) OnPassword(
 	return true, meta.Authenticated(meta.Username), nil
 }
 
-// OnPubKey authenticates an SSH public key by looking it up in authentik (spec
-// §4). The lookup attribute is configurable (AUTH_SERVER_KEY_ATTRIBUTE):
-//
-//  1. canonicalize   ssh.ParseAuthorizedKey + ssh.FingerprintSHA256
-//  2. lookup         by attributes.<keyAttribute>:
-//     ssh_key_fingerprint (default) → exact "SHA256:..." filter;
-//     e.g. sshPublicKey → one exact filter for a single-element list
-//     containing the canonical key (no comment); no directory scan
-//  3. decide         0 users -> deny; exactly 1 -> verify username binding;
-//     >1 -> integrity error (server-side, 500)
-//  4. infra errors   -> return err so ContainerSSH replies 500 and retries
+// OnPubKey canonicalizes the presented key and performs one exact authentik
+// lookup against attributes.sshPublicKey. Exactly one active owner may
+// authenticate; zero or multiple owners are denied. Infrastructure failures
+// return an error so ContainerSSH fails closed.
 func (h *authHandler) OnPubKey(
 	meta metadata.ConnectionAuthPendingMetadata,
 	publicKey auth.PublicKey,
 ) (bool, metadata.ConnectionAuthenticatedMetadata, error) {
-	fingerprint, canonicalKey, err := fingerprintAndCanonicalKey(publicKey.PublicKey)
+	canonicalKey, err := canonicalizeAuthorizedKey(publicKey.PublicKey)
 	if err != nil {
 		// Malformed key blob — a client/UI problem, not an infrastructure one:
 		// deny cleanly without a 500.
@@ -110,7 +103,7 @@ func (h *authHandler) OnPubKey(
 	}
 
 	start := time.Now()
-	user, err := h.authentik.lookupUser(context.Background(), fingerprint, canonicalKey)
+	user, err := h.authentik.lookupUser(context.Background(), canonicalKey)
 	durationMs := time.Since(start).Milliseconds()
 	if err != nil {
 		h.logger.WithLabel("username", message.LabelValue(meta.Username)).
@@ -124,12 +117,11 @@ func (h *authHandler) OnPubKey(
 	}
 	if user == nil {
 		h.logger.WithLabel("username", message.LabelValue(meta.Username)).
-			WithLabel("fingerprint", message.LabelValue(fingerprint)).
 			WithLabel("durationMs", message.LabelValue(fmt.Sprint(durationMs))).
 			Debug(message.NewMessage(
 				logCodePubKeyDenied,
-				"Public key authentication denied for %s: fingerprint %s is not enrolled in authentik",
-				meta.Username, fingerprint,
+				"Public key authentication denied for %s: key is not uniquely enrolled in authentik",
+				meta.Username,
 			))
 		return false, meta.AuthFailed(), nil
 	}
@@ -156,12 +148,11 @@ func (h *authHandler) OnPubKey(
 
 	h.logger.WithLabel("username", message.LabelValue(meta.Username)).
 		WithLabel("owner", message.LabelValue(user.Username)).
-		WithLabel("fingerprint", message.LabelValue(fingerprint)).
 		WithLabel("durationMs", message.LabelValue(fmt.Sprint(durationMs))).
 		Info(message.NewMessage(
 			logCodePubKeySuccess,
-			"Public key authentication succeeded for %s (owner: %s, fingerprint %s)",
-			meta.Username, user.Username, fingerprint,
+			"Public key authentication succeeded for %s (owner: %s)",
+			meta.Username, user.Username,
 		))
 	// Authenticate as the real authentik owner, so the container runs under
 	// the verified identity even when username binding is relaxed.
@@ -200,27 +191,14 @@ func (h *authHandler) OnAuthorization(
 	return true, meta, nil
 }
 
-// fingerprintFromAuthorizedKey parses an armored SSH public key and returns
-// (a) its canonical SHA256 fingerprint and (b) the re-marshaled key without any
-// comment/whitespace — the same canonical form used for the reverse index.
-func fingerprintFromAuthorizedKey(authorized string) (string, error) {
+// canonicalizeAuthorizedKey validates an armored SSH public key and returns
+// type + base64 without its optional comment or surrounding whitespace.
+func canonicalizeAuthorizedKey(authorized string) (string, error) {
 	key, _, _, _, err := ssh.ParseAuthorizedKey([]byte(authorized))
 	if err != nil {
 		return "", err
 	}
-	return ssh.FingerprintSHA256(key), nil
-}
-
-// fingerprintAndCanonicalKey returns the fingerprint plus the canonical armored
-// key line (no comment, trailing whitespace trimmed) for the sync job.
-func fingerprintAndCanonicalKey(authorized string) (fingerprint, canonical string, err error) {
-	key, _, _, _, err := ssh.ParseAuthorizedKey([]byte(authorized))
-	if err != nil {
-		return "", "", err
-	}
-	return ssh.FingerprintSHA256(key),
-		strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key))),
-		nil
+	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key))), nil
 }
 
 // configHandler implements config.RequestHandler. This auth/config server does
