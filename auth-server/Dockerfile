@@ -3,7 +3,7 @@ FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
-COPY main.go authentik.go auth_handler.go sync.go ./
+COPY main.go authentik.go auth_handler.go ./
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/auth-server .
 
 # Runtime stage
