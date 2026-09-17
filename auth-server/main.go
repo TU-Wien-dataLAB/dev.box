@@ -14,9 +14,9 @@
 //	POST /config     empty per-connection config (base config unchanged)
 //
 // The authentik side lives in authentik.go (API client) and auth_handler.go
-// (the handler). An SSH client presents a public key; the server canonicalizes
-// it to type + base64 and performs one exact authentik users query against the
-// `sshPublicKey` attribute. See spec §4.
+// (the handler). The server performs one exact authentik users query for the
+// public-key string supplied by ContainerSSH against the `sshPublicKey`
+// attribute. See spec §4.
 //
 // [1] https://goauthentik.io
 package main
@@ -48,10 +48,7 @@ const (
 	envAuthentikURL  = "AUTHENTIK_URL"
 	envAuthToken     = "AUTHENTIK_TOKEN"
 	envAuthTokenFile = "AUTHENTIK_TOKEN_FILE"
-	envAuthentikCA   = "AUTHENTIK_CA_FILE"
 	envInsecure      = "AUTHENTIK_INSECURE_SKIP_VERIFY"
-	envEnforceUser   = "AUTH_SERVER_ENFORCE_USERNAME"
-	envPasswordUsers = "AUTH_SERVER_PASSWORD_USERS"
 	envRequireGroup  = "AUTH_SERVER_REQUIRE_GROUP"
 )
 
@@ -77,10 +74,7 @@ func main() {
 	if err != nil {
 		fail(logger, "AUTH_DEV_START_FAILED", "%v", err)
 	}
-	httpClient, err := newHTTPClient(env(envAuthentikCA, ""), envBool(envInsecure))
-	if err != nil {
-		fail(logger, "AUTH_DEV_START_FAILED", "invalid authentik HTTP client: %v", err)
-	}
+	httpClient := newHTTPClient(envBool(envInsecure))
 
 	authentikClient := &authentikClient{cfg: authentikConfig{
 		BaseURL:    authenticURL,
@@ -94,9 +88,7 @@ func main() {
 	))
 	// ---- auth behaviour ---------------------------------------------------
 	authCfg := authConfig{
-		EnforceUsername: envBoolDefault(envEnforceUser, true),
-		PasswordUsers:   parsePasswordUsers(env(envPasswordUsers, "")),
-		RequireGroup:    env(envRequireGroup, ""),
+		RequireGroup: env(envRequireGroup, ""),
 	}
 
 	// ---- server + service lifecycle --------------------------------------
@@ -192,17 +184,6 @@ func secretFromEnv(file, direct string, logger log.Logger) (string, error) {
 		return strings.TrimSpace(string(data)), nil
 	}
 	return env(direct, ""), nil
-}
-
-// parsePasswordUsers splits the comma-separated allowlist into a set.
-func parsePasswordUsers(s string) map[string]struct{} {
-	set := map[string]struct{}{}
-	for _, u := range strings.Split(s, ",") {
-		if u = strings.TrimSpace(u); u != "" {
-			set[u] = struct{}{}
-		}
-	}
-	return set
 }
 
 func env(key, fallback string) string {

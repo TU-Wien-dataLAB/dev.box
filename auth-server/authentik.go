@@ -3,21 +3,19 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 )
 
 const (
 	// attrSSHPublicKey is the authentik user attribute searched during SSH
-	// login. Its value must be a single-element JSON list containing the
-	// canonical public key (type + base64, without a comment).
+	// login. Its value must be a single-element JSON list containing exactly
+	// the public-key string supplied by ContainerSSH.
 	attrSSHPublicKey = "sshPublicKey"
 
 	authentikRestAPIV3 = "/api/v3/core/users/"
@@ -60,14 +58,14 @@ type authentikClient struct {
 }
 
 // lookupUser performs one exact authentik query for a single-element list
-// containing the canonical SSH public key. Exactly one result returns its
-// owner; zero or multiple results are a clean authentication miss.
+// containing the SSH public-key string supplied by ContainerSSH. Exactly one
+// result returns its owner; zero or multiple results are a clean auth miss.
 func (c *authentikClient) lookupUser(
 	ctx context.Context,
-	canonicalKey string,
+	publicKey string,
 ) (*authentikUser, error) {
 	filter, err := json.Marshal(map[string][]string{
-		attrSSHPublicKey: {canonicalKey},
+		attrSSHPublicKey: {publicKey},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode SSH key filter: %w", err)
@@ -148,36 +146,17 @@ func (c *authentikClient) usersURL(values url.Values) string {
 	return u.String()
 }
 
-// newHTTPClient builds the API HTTP client honouring AUTHENTIK_CA_FILE /
-// AUTHENTIK_INSECURE_SKIP_VERIFY, with a bounded request timeout.
-func newHTTPClient(caFile string, insecure bool) (*http.Client, error) {
-	tlsConfig := &tls.Config{
-		// #nosec G402 -- explicit opt-in for self-signed dev installations.
-		InsecureSkipVerify: insecure,
-		MinVersion:         tls.VersionTLS12,
-	}
-	if caFile != "" {
-		pem, err := readFileOrLiteral(caFile)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read AUTHENTIK_CA_FILE: %w", err)
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(pem) {
-			return nil, fmt.Errorf("AUTHENTIK_CA_FILE contains no usable CA certificate")
-		}
-		tlsConfig.RootCAs = pool
-	}
+// newHTTPClient uses the system CA trust store and a bounded request timeout.
+// TLS verification can only be disabled through the explicit development flag.
+func newHTTPClient(insecure bool) *http.Client {
 	return &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
-			TLSClientConfig: tlsConfig,
+			TLSClientConfig: &tls.Config{
+				// #nosec G402 -- explicit opt-in for development installations.
+				InsecureSkipVerify: insecure,
+				MinVersion:         tls.VersionTLS12,
+			},
 		},
-	}, nil
-}
-
-func readFileOrLiteral(value string) ([]byte, error) {
-	if data, err := os.ReadFile(value); err == nil {
-		return data, nil
 	}
-	return []byte(value), nil
 }

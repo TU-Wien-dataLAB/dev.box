@@ -10,7 +10,7 @@ backend**. The deployment target is ContainerSSH's **persistent** execution mode
 connection creates a stable per-user pod, later connections exec into that same pod, and
 disconnecting does not delete it. It consists of:
 
-1. **`charts/containerssh/`** — a Helm chart (v2, `containerssh-0.1.6`, `appVersion: 0.6`) that
+1. **`charts/containerssh/`** — a Helm chart (v2, `containerssh-0.1.7`, `appVersion: 0.6`) that
    deploys ContainerSSH itself plus optional extras.
 2. **`config-server/`** — a small Go server implementing the ContainerSSH config webhook protocol
    (built on `go.containerssh.io/containerssh` `config/webhook`), serving **pod templates selected
@@ -35,7 +35,7 @@ Source of truth for ContainerSSH internals: `/Users/matthiasmatt/Documents/Work/
 dev.box/
 ├── AGENTS.md                  ← this file
 ├── charts/containerssh/       ← the Helm chart
-│   ├── Chart.yaml             (name containerssh, v0.1.6, appVersion 0.6)
+│   ├── Chart.yaml             (name containerssh, v0.1.7, appVersion 0.6)
 │   ├── values.yaml            (everything is configurable from here)
 │   ├── README.md
 │   └── templates/
@@ -79,7 +79,7 @@ ssh ubuntu@dev.box.example.com
         ▼
    ContainerSSH (Deployment, port 2222)
         │ 1b. POST /pubkey (username, key) → auth-server
-        │     (canonical key → exact GET by attributes.sshPublicKey)
+        │     (exact key string → GET by attributes.sshPublicKey)
         ▼
    auth-server (bundled, auto-wired auth.publicKey.webhook.url)  ⇄  authentik API
         │ success → authenticated as key owner
@@ -98,8 +98,8 @@ ssh ubuntu@dev.box.example.com
 - The target lifecycle is one stable pod name per authenticated user. With
   `mode: persistent` and `createMissingPods: true`, ContainerSSH creates that pod if absent, execs
   each SSH channel in it, and deliberately leaves it running after disconnect.
-- SSH **key auth** is the auth-server's job: it canonicalizes the presented key and queries
-  authentik for exactly one owner via `attributes.sshPublicKey`. Nowhere in
+- SSH **key auth** is the auth-server's job: it queries authentik for exactly one owner of the
+  public-key string supplied by ContainerSSH via `attributes.sshPublicKey`. Nowhere in
   ContainerSSH, this chart, or the auth server is a password verified against authentik — password
   auth is off by default (test allowlist only).
 
@@ -113,7 +113,7 @@ ssh ubuntu@dev.box.example.com
 | `ssh.hostKey.existingSecret` / `.privateKey` | `""` | stable host key; else ephemeral key fallback |
 | `auth.*.webhook.url` | `""` | external password/publicKey/authz webhook URLs (v0.6 YAML keys: `password`, `publicKey`, `authz` — NOT `pubkey`); chart rendering requires password or publicKey unless **auto-wired to the bundled auth-server** |
 | `auth.*.webhook.timeout` | `30s` | per-request timeout; overall auth timeout defaults to 60s |
-| `authServer.enabled` | `false` | deploy the bundled authentik-backed auth server + auto-wire `auth.password/publicKey/authz.webhook.url` |
+| `authServer.enabled` | `false` | deploy the bundled authentik-backed auth server + auto-wire `auth.publicKey/authz.webhook.url` |
 | `authServer.authentik.url` / `.token` | `""` | authentik base URL + read-only service token (or `tokenSecret` existing Secret) — **required** when enabled |
 | `kubernetes.sessionNamespace` | `containerssh-sessions` | where user pods run (chart force-manages) |
 | `kubernetes.mode` | `connection` | chart default; **dev.box target is `persistent`**, not yet fully wired |
@@ -176,13 +176,14 @@ ssh ubuntu@dev.box.example.com
   auth request denies the connection (ContainerSSH retries until the method's `authTimeout`).
   authentik must be reachable from the auth-server pod. Per-request webhook timeout is 30s.
 - **Public-key lookup is strict and constant-cost**: the auth server performs one exact authentik
-  filter for `attributes.sshPublicKey` as a single-element JSON list containing the canonical key
-  (`type + base64`, no comment). Exactly one user authenticates; zero or multiple users deny
-  cleanly. Scalar/commented/multi-key values do not match, and there is no directory scan.
-- **Key-first, password-by-test-only**: the bundled auth server never verifies a password against
-  authentik; `authServer.passwordUsers` grants an UNVERIFIED password login (test/break-glass only).
+  filter for `attributes.sshPublicKey` as a single-element JSON list containing the key string from
+  ContainerSSH. Exactly one user authenticates; zero or multiple users deny cleanly. Values are not
+  parsed or normalized, and there is no directory scan.
+- **Public-key only**: the bundled chart configures no password webhook; the protocol-required
+  `OnPassword` implementation always denies. The SSH username intentionally selects the pod
+  template and is not compared with the authentik owner; authenticated metadata records the owner.
 - **The bundled auth server is read-only** against authentik. Its service token needs only user-view
-  permission; key canonicalization belongs in the authentik settings write path.
+  permission.
 - **Config file loading applies struct defaults** (`structutils.Defaults` in
   `internal/config/loader_reader.go`) — the chart only renders what it overrides.
 - **`default` is a reserved template name** — it's the catch-all in the config server.
@@ -257,11 +258,9 @@ Remaining before the staged persistent-mode validation:
      DNS-1123 `metadata.name` from the canonical authenticated user (`authenticatedUsername`), stop
      relying on `generateName`, define explicit deletion/retention behavior, and add
      disconnect/reconnect coverage.
-  2. Settle the SSH username vs canonical authentik identity policy before enabling username
-     enforcement.
-  3. Pin the config-server image to an immutable SHA tag and run the remaining negative, policy,
+  2. Pin the config-server image to an immutable SHA tag and run the remaining negative, policy,
      and fail-closed stages in `tests/cluster-deployment-spec.md`.
-  4. Optional, later: `ingress.enabled=true` + the one-time Traefik TCP entrypoint/port setup
+  3. Optional, later: `ingress.enabled=true` + the one-time Traefik TCP entrypoint/port setup
      (see values.yaml `ingress`, NOTES.txt).
 
 Current auth/config smoke-install command (no ingress; still uses the chart's non-target

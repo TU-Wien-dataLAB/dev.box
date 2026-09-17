@@ -57,7 +57,7 @@ assert_config() {
       abort "wrong pubkey URL" unless auth.dig("publicKey", "webhook", "url") == "https://pubkey.example.test"
       abort "wrong authz URL" unless auth.dig("authz", "webhook", "url") == "https://authz.example.test"
     when "bundled"
-      abort "wrong auth methods: #{auth.keys.inspect}" unless auth.keys.sort == ["authz", "password", "publicKey"]
+      abort "wrong auth methods: #{auth.keys.inspect}" unless auth.keys.sort == ["authz", "publicKey"]
       auth.each_value do |method|
         abort "wrong bundled URL" unless method.dig("webhook", "url") == bundled
       end

@@ -19,12 +19,9 @@ The user's SSH key is stored under `sshPublicKey`:
 }
 ```
 
-The value must be:
-
-- a JSON list;
-- exactly one item;
-- a valid canonical SSH public key in `type + base64` form;
-- free of comments and surrounding whitespace.
+The value must be a JSON list with exactly one item, and that item must exactly equal the public-key
+string supplied by ContainerSSH. During normal SSH authentication ContainerSSH supplies key type and
+base64 payload without the optional `.pub` comment.
 
 Authentik's users API supports exact JSON attribute equality:
 
@@ -33,15 +30,15 @@ GET /api/v3/core/users/?attributes={"sshPublicKey":["ssh-ed25519 AAAA..."]}
 ```
 
 The `attributes` value is URL-encoded on the wire. List membership, substring matching, and
-case-insensitive matching are not supported. Consequently, scalar values, commented keys, and
-multi-key lists do not match.
+case-insensitive matching are not supported. Consequently, scalar values and multi-key lists do not
+match. Comments are not treated specially: if present in the webhook value, they participate in the
+exact match.
 
 ### Upload requirement
 
-Users should provide their ordinary `.pub` key. The authentik settings flow or provisioner must
-validate/canonicalize it before storing it by retaining only the key type and base64 payload. The
-auth server cannot normalize stored values because its token is read-only and the users API only
-supports exact equality.
+Users provide their ordinary public key through the authentik settings field. The stored string must
+match ContainerSSH's webhook value. The auth server is deliberately read-only and does not parse or
+rewrite stored keys.
 
 This version supports one key per user. Supporting multiple keys requires a different authentik data
 model with an exact-searchable reverse index.
@@ -72,31 +69,27 @@ For public-key authentication:
 
 For each `POST /pubkey` request:
 
-1. Parse the presented key with `ssh.ParseAuthorizedKey`.
-2. Re-marshal it with `ssh.MarshalAuthorizedKey` and trim whitespace, producing `type + base64`.
-3. Make one authenticated request to authentik:
+1. Take the public-key string supplied by ContainerSSH unchanged.
+2. Make one authenticated request to authentik:
 
    ```http
-   GET /api/v3/core/users/?attributes={"sshPublicKey":["<canonical-key>"]}
+   GET /api/v3/core/users/?attributes={"sshPublicKey":["<public-key>"]}
    Authorization: Bearer <read-token>
    ```
 
-4. Require both the reported result count and decoded result length to equal one.
-5. Require the owner account to be active.
-6. If username enforcement is enabled, require the requested SSH username to equal the authentik
-   username, case-insensitively.
-7. Authenticate as the authentik owner, not merely as the requested SSH username.
+3. Require both the reported result count and decoded result length to equal one.
+4. Require the owner account to be active.
+5. Authenticate as the authentik owner. The requested SSH username is independent and selects the
+   dev.box pod template.
 
 Decision table:
 
 | Condition | Result |
 | --- | --- |
-| malformed key | deny |
 | zero users | deny |
 | multiple users | deny |
 | one inactive user | deny |
-| username mismatch while enforcement is enabled | deny |
-| one active owner satisfying username policy | authenticate as owner |
+| one active owner | authenticate as owner |
 | timeout, transport error, non-2xx, or invalid response | HTTP 500 / fail closed |
 
 ## HTTP and security requirements
@@ -105,7 +98,7 @@ Decision table:
 - The bearer token requires read access to users only.
 - The complete request URL is never logged because it contains the public key query.
 - Decision logs may contain requested username, owner username, and duration, but not key material.
-- TLS verification is enabled by default; a custom CA is supported.
+- TLS verification uses the container's system CA trust store by default.
 - `AUTHENTIK_INSECURE_SKIP_VERIFY` is development-only.
 
 ## Other endpoints
@@ -114,7 +107,7 @@ The same listener exposes the protocol-complete endpoints:
 
 | Endpoint | Behavior |
 | --- | --- |
-| `POST /password` | deny unless explicitly enabled by the test-only allowlist |
+| `POST /password` | always deny; present only to satisfy the handler interface |
 | `POST /pubkey` | public-key flow above |
 | `POST /authz` | allow, or apply the configured authentik group gate |
 | `POST /config` | return an empty override so ContainerSSH keeps its base config |
@@ -127,9 +120,6 @@ Required:
 - `AUTHENTIK_URL`
 - `AUTHENTIK_TOKEN` or `AUTHENTIK_TOKEN_FILE`
 
-Public-key policy:
-
-- `AUTH_SERVER_ENFORCE_USERNAME` defaults to `true`.
-
-There is intentionally no configurable key attribute, write token, synchronization interval, or
-fingerprint mode. The single `attributes.sshPublicKey` contract keeps the login path deterministic.
+There is intentionally no configurable key attribute, username-binding mode, password allowlist,
+write token, synchronization interval, fingerprint mode, or custom-CA setting. The single
+`attributes.sshPublicKey` contract keeps the login path deterministic.

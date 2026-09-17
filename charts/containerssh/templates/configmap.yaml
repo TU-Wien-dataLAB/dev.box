@@ -89,7 +89,7 @@ data:
     {{- if .Values.authServer.enabled }}
     {{- $authURL = printf "http://%s-auth-server.%s.svc.cluster.local:8080" (include "containerssh.fullname" .) .Release.Namespace }}
     {{- end }}
-    {{- $passwordURL := default $authURL .Values.auth.password.webhook.url }}
+    {{- $passwordURL := .Values.auth.password.webhook.url }}
     {{- $publicKeyURL := default $authURL .Values.auth.publicKey.webhook.url }}
     {{- $authzURL := default $authURL .Values.auth.authz.webhook.url }}
     {{- if not (or $passwordURL $publicKeyURL) }}

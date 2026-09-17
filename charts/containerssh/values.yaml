@@ -254,11 +254,11 @@ configServer:
 
 # Bundled auth server (dev.box/auth-server). When enabled, the chart deploys it
 # as a sibling Deployment + Service next to ContainerSSH and auto-wires
-# auth.password/pubkey/authz.webhook.url to it. It does the authentik-backed SSH
+# auth.publicKey/authz.webhook.url to it. It does the authentik-backed SSH
 # public-key lookup (see auth-server/README.md & auth-server/spec.md): the server
-# canonicalizes the presented key and performs one exact users API query against
-# attributes.sshPublicKey, denying unless exactly one owner is returned. Password
-# auth stays disabled by default (AUTH_SERVER_PASSWORD_USERS empty).
+# performs one exact users API query against attributes.sshPublicKey and denies
+# unless exactly one active owner is returned. Password authentication is not
+# configured by the bundled server.
 #
 # Required before SSH works: an authentik URL + a service-account token with read
 # access to users (the image must also be built/pushed — see auth-server README).
@@ -283,15 +283,9 @@ authServer:
     tokenSecretKey: "token"         # key inside that Secret
     # AUTHENTIK_INSECURE_SKIP_VERIFY — dev only.
     insecureSkipVerify: false
-  # AUTH_SERVER_ENFORCE_USERNAME: require ssh <user>@host to equal the authentik
-  # owner of the key (prevents impersonation).
-  enforceUsername: true
   # AUTH_SERVER_REQUIRE_GROUP: when set, require membership of this authentik
   # group (post-auth authorization gate). Empty = allow all authenticated users.
   requireGroup: ""
-  # AUTH_SERVER_PASSWORD_USERS: comma-separated usernames allowed password auth
-  # (ANY password — test/break-glass only, unverified). Empty = password auth off.
-  passwordUsers: ""
   resources:
     limits:
       cpu: 100m

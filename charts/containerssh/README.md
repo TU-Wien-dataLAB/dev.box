@@ -258,16 +258,16 @@ helm install containerssh . \
 ## Bundled authentik auth server (`authServer.enabled`)
 
 SSH key auth asks authentik one question: **which user has this exact public key?** The bundled
-server canonicalizes the presented key to `type + base64` and performs one exact users query against
+server performs one exact users query for the string supplied by ContainerSSH against
 `attributes.sshPublicKey`. It exposes ContainerSSH's `/pubkey` webhook plus the protocol-complete
-`/password`, `/authz`, and `/config` endpoints.
+`/password` (always denied), `/authz`, and `/config` endpoints.
 
 Before enabling it:
 1. build/push the image (repo CI publishes it to `ghcr.io/tu-wien-datalab/dev.box/auth-server`),
 2. create an authentik service-account token with read access to users, and
-3. store each user's key as a single-element `attributes.sshPublicKey` list. The key must be
-   canonical (`type + base64`, no comment); the authentik settings write path must normalize pasted
-   `.pub` lines before saving.
+3. store each user's key as a single-element `attributes.sshPublicKey` list whose item exactly
+   matches ContainerSSH's webhook value. Normal SSH authentication supplies `type + base64` without
+   the optional `.pub` comment.
 
 Example `values.yaml`:
 
@@ -281,8 +281,8 @@ authServer:
 ```
 
 When enabled the chart: creates a Secret (from `token`, or reuses `tokenSecret`), deploys the
-server next to ContainerSSH, and auto-wires `auth.password/publicKey/authz.webhook.url` to its
-Service (`http://<release>-auth-server.<ns>.svc.cluster.local:8080`). SSH in with the authentik
+server next to ContainerSSH, and auto-wires `auth.publicKey/authz.webhook.url` to its Service
+(`http://<release>-auth-server.<ns>.svc.cluster.local:8080`). SSH in with the authentik
 username whose key is enrolled:
 
 ```bash
@@ -297,11 +297,11 @@ See `auth-server/README.md` for all env knobs and the lookup flow.
 **Caveats:**
 - **Fail-closed**: while an auth webhook URL is set, ContainerSSH *denies* connections when the
   auth request errors — authentik must be reachable from this pod.
-- **Password stays off** on the server by default; the `AUTH_SERVER_PASSWORD_USERS` escape hatch
-  (`authServer.passwordUsers`) grants logins with an unverified password — test/break-glass only.
-- **Public-key equality is strict**: `attributes.sshPublicKey` must be a single-element list
-  containing `type + base64` without a comment. Zero or multiple exact matches deny cleanly; there
-  is no alternate query or directory scan.
+- **Password is not configured** by the bundled server, and its protocol-required `/password`
+  handler always denies.
+- **Public-key equality is strict**: `attributes.sshPublicKey` must be a single-element list whose
+  item exactly matches the webhook value. Zero or multiple matches deny cleanly; there is no
+  alternate query or directory scan.
 
 ## Security guidance (from the reference)
 

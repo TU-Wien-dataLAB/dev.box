@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
-	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -16,24 +16,19 @@ import (
 	"go.containerssh.io/containerssh/config"
 	"go.containerssh.io/containerssh/log"
 	"go.containerssh.io/containerssh/metadata"
-
-	"golang.org/x/crypto/ssh"
 )
 
 // ---- helpers ---------------------------------------------------------------
 
-// newTestKey returns a fresh ed25519 public key and its armored line.
-func newTestKey(t *testing.T) (ssh.PublicKey, string) {
+// newTestKey returns a unique key-shaped value. ContainerSSH validates the SSH
+// key before invoking this webhook; this server performs exact string lookup.
+func newTestKey(t *testing.T) string {
 	t.Helper()
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generate key: %v", err)
+	data := make([]byte, 32)
+	if _, err := rand.Read(data); err != nil {
+		t.Fatalf("generate key data: %v", err)
 	}
-	pub, err := ssh.NewPublicKey(priv.Public())
-	if err != nil {
-		t.Fatalf("wrap public key: %v", err)
-	}
-	return pub, strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub)))
+	return "ssh-ed25519 " + base64.StdEncoding.EncodeToString(data)
 }
 
 func testLogger(t *testing.T) log.Logger {
@@ -55,25 +50,6 @@ func userWithKey(u authentikUser, key string) authentikUser {
 	}
 	u.Attributes[attrSSHPublicKey] = []interface{}{key}
 	return u
-}
-
-// ---- public-key canonicalization ------------------------------------------
-
-func TestCanonicalizeAuthorizedKeyDropsComment(t *testing.T) {
-	pub, armored := newTestKey(t)
-	canonical, err := canonicalizeAuthorizedKey(armored + " bob@laptop\n")
-	if err != nil {
-		t.Fatalf("canonicalize: %v", err)
-	}
-	if canonical != strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub))) {
-		t.Fatalf("canonical key includes a comment: %q", canonical)
-	}
-}
-
-func TestCanonicalizeAuthorizedKeyRejectsGarbage(t *testing.T) {
-	if _, err := canonicalizeAuthorizedKey("not a key at all"); err == nil {
-		t.Fatal("expected parse error for garbage input")
-	}
 }
 
 // ---- mock authentik --------------------------------------------------------
@@ -202,8 +178,8 @@ func newMockClient(t *testing.T, m *mockAuthentik) *authentikClient {
 // ---- lookup semantics ------------------------------------------------------
 
 func TestLookupUser(t *testing.T) {
-	_, aliceKey := newTestKey(t)
-	_, bobKey := newTestKey(t)
+	aliceKey := newTestKey(t)
+	bobKey := newTestKey(t)
 
 	t.Run("no user owns the key", func(t *testing.T) {
 		m := &mockAuthentik{t: t, users: []authentikUser{}}
@@ -255,7 +231,7 @@ func TestLookupUser(t *testing.T) {
 // ---- exact public-key attribute semantics ---------------------------------
 
 func TestLookupByKeyAttribute(t *testing.T) {
-	_, aliceKey := newTestKey(t)
+	aliceKey := newTestKey(t)
 	canonical := strings.TrimSpace(aliceKey)
 
 	userWithRawKey := func(u authentikUser, value interface{}) authentikUser {
@@ -359,21 +335,20 @@ func TestLookupByKeyAttribute(t *testing.T) {
 // ---- OnPubKey ---------------------------------------------------------------
 
 func TestOnPubKey(t *testing.T) {
-	_, aliceKey := newTestKey(t)
-	_, bobKey := newTestKey(t)
+	aliceKey := newTestKey(t)
+	bobKey := newTestKey(t)
 	alice := userWithKey(authentikUser{PK: 1, UUID: "u1", Username: "alice", IsActive: true}, aliceKey)
 
-	newHandler := func(enforce bool) *authHandler {
+	newHandler := func() *authHandler {
 		m := &mockAuthentik{t: t, users: []authentikUser{alice}}
 		return &authHandler{
 			authentik: newMockClient(t, m),
-			cfg:       authConfig{EnforceUsername: enforce, PasswordUsers: map[string]struct{}{}},
 			logger:    testLogger(t),
 		}
 	}
 
-	t.Run("valid key + matching username succeeds as owner", func(t *testing.T) {
-		h := newHandler(true)
+	t.Run("valid key succeeds as owner", func(t *testing.T) {
+		h := newHandler()
 		ok, meta, err := h.OnPubKey(
 			metadata.NewTestAuthenticatingMetadata("alice"),
 			auth.PublicKey{PublicKey: aliceKey},
@@ -387,7 +362,7 @@ func TestOnPubKey(t *testing.T) {
 	})
 
 	t.Run("key not enrolled is denied", func(t *testing.T) {
-		h := newHandler(true)
+		h := newHandler()
 		ok, _, err := h.OnPubKey(
 			metadata.NewTestAuthenticatingMetadata("bob"),
 			auth.PublicKey{PublicKey: bobKey},
@@ -397,19 +372,8 @@ func TestOnPubKey(t *testing.T) {
 		}
 	})
 
-	t.Run("enforce-username denies impersonation", func(t *testing.T) {
-		h := newHandler(true)
-		ok, _, err := h.OnPubKey(
-			metadata.NewTestAuthenticatingMetadata("bob"),
-			auth.PublicKey{PublicKey: aliceKey},
-		)
-		if ok || err != nil {
-			t.Fatalf("expected denied impersonation, got ok=%v err=%v", ok, err)
-		}
-	})
-
-	t.Run("enforce-username off authenticates as owner", func(t *testing.T) {
-		h := newHandler(false)
+	t.Run("requested pod-template username authenticates as owner", func(t *testing.T) {
+		h := newHandler()
 		ok, meta, err := h.OnPubKey(
 			metadata.NewTestAuthenticatingMetadata("anything"),
 			auth.PublicKey{PublicKey: aliceKey},
@@ -428,7 +392,6 @@ func TestOnPubKey(t *testing.T) {
 		}}
 		h := &authHandler{
 			authentik: newMockClient(t, m),
-			cfg:       authConfig{EnforceUsername: true, PasswordUsers: map[string]struct{}{}},
 			logger:    testLogger(t),
 		}
 		ok, _, err := h.OnPubKey(
@@ -444,7 +407,7 @@ func TestOnPubKey(t *testing.T) {
 // ---- OnPubKey exact attribute semantics ------------------------------------
 
 func TestOnPubKeyWithKeyAttribute(t *testing.T) {
-	_, aliceKey := newTestKey(t)
+	aliceKey := newTestKey(t)
 	canonical := strings.TrimSpace(aliceKey)
 
 	newHandler := func(value interface{}) *authHandler {
@@ -455,7 +418,6 @@ func TestOnPubKeyWithKeyAttribute(t *testing.T) {
 		}()}}
 		return &authHandler{
 			authentik: newMockClient(t, m),
-			cfg:       authConfig{EnforceUsername: true, PasswordUsers: map[string]struct{}{}},
 			logger:    testLogger(t),
 		}
 	}
@@ -474,14 +436,15 @@ func TestOnPubKeyWithKeyAttribute(t *testing.T) {
 		}
 	})
 
-	t.Run("commented value is denied", func(t *testing.T) {
-		h := newHandler([]interface{}{canonical + " alice@laptop"})
+	t.Run("comment is preserved for exact matching", func(t *testing.T) {
+		commented := canonical + " alice@laptop"
+		h := newHandler([]interface{}{commented})
 		ok, _, err := h.OnPubKey(
-			metadata.NewTestAuthenticatingMetadata("alice"),
-			auth.PublicKey{PublicKey: aliceKey},
+			metadata.NewTestAuthenticatingMetadata("pod-template"),
+			auth.PublicKey{PublicKey: commented},
 		)
-		if err != nil || ok {
-			t.Fatalf("expected clean exact-match denial, got ok=%v err=%v", ok, err)
+		if err != nil || !ok {
+			t.Fatalf("expected exact commented key to authenticate, got ok=%v err=%v", ok, err)
 		}
 	})
 }
@@ -489,7 +452,7 @@ func TestOnPubKeyWithKeyAttribute(t *testing.T) {
 // ---- OnAuthorization ---------------------------------------------------------
 
 func TestOnAuthorizationGroupGate(t *testing.T) {
-	_, key := newTestKey(t)
+	key := newTestKey(t)
 	alice := userWithKey(authentikUser{
 		PK: 1, UUID: "u1", Username: "alice", IsActive: true,
 		Groups: []authentikGroup{{PK: "g1", Name: "ssh-users"}},

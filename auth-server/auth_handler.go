@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	goHttp "net/http"
@@ -15,8 +14,6 @@ import (
 	"go.containerssh.io/containerssh/log"
 	"go.containerssh.io/containerssh/message"
 	"go.containerssh.io/containerssh/metadata"
-
-	"golang.org/x/crypto/ssh"
 )
 
 // Log message codes for auth decisions (syslog level = log severity).
@@ -25,24 +22,12 @@ const (
 	logCodePubKeyDenied  = "AUTH_SERVER_PUBKEY_DENIED"
 	logCodePubKeyError   = "AUTH_SERVER_PUBKEY_ERROR"
 	logCodePassDenied    = "AUTH_SERVER_PASSWORD_DENIED"
-	logCodePassSuccess   = "AUTH_SERVER_PASSWORD_SUCCESS"
 	logCodeAuthzDenied   = "AUTH_SERVER_AUTHZ_DENIED"
 	logCodeAuthzError    = "AUTH_SERVER_AUTHZ_ERROR"
 )
 
-// authConfig carries the runtime behaviour switches for the auth handler,
-// all derived from environment variables in main.go.
+// authConfig carries the optional post-auth group policy.
 type authConfig struct {
-	// EnforceUsername requires the SSH username to equal the authentik username
-	// that owns the presented key (spec §4, step 4: "verify/enforce username
-	// binding"). Off = any username is accepted as long as a key is enrolled,
-	// and the session is authenticated as the key's owner.
-	EnforceUsername bool
-	// PasswordUsers lists the usernames allowed to log in with *any* password.
-	// Intended for local break-glass / test setups only — passwords are not
-	// verified against authentik here. Empty = password auth disabled.
-	PasswordUsers map[string]struct{}
-	// RequireGroup, when set, makes OnAuthorization demand group membership.
 	RequireGroup string
 }
 
@@ -54,56 +39,31 @@ type authHandler struct {
 	logger    log.Logger
 }
 
-// OnPassword is implemented for protocol completeness and as a constrained
-// test/fallback escape hatch. This setup is key-first — by default every
-// username is denied here so only the authentik-backed pubkey path grants
-// access.
+// OnPassword always denies. The method is required by ContainerSSH's auth
+// handler interface, but this server only authenticates public keys.
 func (h *authHandler) OnPassword(
 	meta metadata.ConnectionAuthPendingMetadata,
-	password []byte,
+	_ []byte,
 ) (bool, metadata.ConnectionAuthenticatedMetadata, error) {
-	_, allowed := h.cfg.PasswordUsers[meta.Username]
-	if !allowed {
-		h.logger.WithLabel("username", message.LabelValue(meta.Username)).
-			Debug(message.NewMessage(
-				logCodePassDenied,
-				"Password authentication denied for user %s (not in allowlist)",
-				meta.Username,
-			))
-		return false, meta.AuthFailed(), nil
-	}
 	h.logger.WithLabel("username", message.LabelValue(meta.Username)).
-		Warning(message.NewMessage(
-			logCodePassSuccess,
-			"Password authentication granted to %s via unverified test allowlist — NOT production mode",
+		Debug(message.NewMessage(
+			logCodePassDenied,
+			"Password authentication denied for user %s",
 			meta.Username,
 		))
-	return true, meta.Authenticated(meta.Username), nil
+	return false, meta.AuthFailed(), nil
 }
 
-// OnPubKey canonicalizes the presented key and performs one exact authentik
-// lookup against attributes.sshPublicKey. Exactly one active owner may
-// authenticate; zero or multiple owners are denied. Infrastructure failures
-// return an error so ContainerSSH fails closed.
+// OnPubKey performs one exact authentik lookup for the public-key string
+// supplied by ContainerSSH. Exactly one active owner may authenticate; zero or
+// multiple owners are denied. Infrastructure failures return an error so
+// ContainerSSH fails closed.
 func (h *authHandler) OnPubKey(
 	meta metadata.ConnectionAuthPendingMetadata,
 	publicKey auth.PublicKey,
 ) (bool, metadata.ConnectionAuthenticatedMetadata, error) {
-	canonicalKey, err := canonicalizeAuthorizedKey(publicKey.PublicKey)
-	if err != nil {
-		// Malformed key blob — a client/UI problem, not an infrastructure one:
-		// deny cleanly without a 500.
-		h.logger.WithLabel("username", message.LabelValue(meta.Username)).
-			Debug(message.NewMessage(
-				logCodePubKeyDenied,
-				"Public key authentication denied for %s: could not parse the key: %v",
-				meta.Username, err,
-			))
-		return false, meta.AuthFailed(), nil
-	}
-
 	start := time.Now()
-	user, err := h.authentik.lookupUser(context.Background(), canonicalKey)
+	user, err := h.authentik.lookupUser(context.Background(), publicKey.PublicKey)
 	durationMs := time.Since(start).Milliseconds()
 	if err != nil {
 		h.logger.WithLabel("username", message.LabelValue(meta.Username)).
@@ -135,17 +95,6 @@ func (h *authHandler) OnPubKey(
 			))
 		return false, meta.AuthFailed(), nil
 	}
-	if h.cfg.EnforceUsername && !strings.EqualFold(user.Username, meta.Username) {
-		h.logger.WithLabel("username", message.LabelValue(meta.Username)).
-			WithLabel("owner", message.LabelValue(user.Username)).
-			Debug(message.NewMessage(
-				logCodePubKeyDenied,
-				"Public key authentication denied for %s: key belongs to %s (username binding enforced)",
-				meta.Username, user.Username,
-			))
-		return false, meta.AuthFailed(), nil
-	}
-
 	h.logger.WithLabel("username", message.LabelValue(meta.Username)).
 		WithLabel("owner", message.LabelValue(user.Username)).
 		WithLabel("durationMs", message.LabelValue(fmt.Sprint(durationMs))).
@@ -154,14 +103,14 @@ func (h *authHandler) OnPubKey(
 			"Public key authentication succeeded for %s (owner: %s)",
 			meta.Username, user.Username,
 		))
-	// Authenticate as the real authentik owner, so the container runs under
-	// the verified identity even when username binding is relaxed.
+	// The SSH username selects the pod template; authenticated metadata records
+	// the verified authentik owner.
 	return true, meta.Authenticated(user.Username), nil
 }
 
 // OnAuthorization runs after a successful authentication. By default it allows
 // everyone through; with AUTH_SERVER_REQUIRE_GROUP set it gates access on
-// membership of that authentik group (spec §4, step 6).
+// membership of that authentik group.
 func (h *authHandler) OnAuthorization(
 	meta metadata.ConnectionAuthenticatedMetadata,
 ) (bool, metadata.ConnectionAuthenticatedMetadata, error) {
@@ -189,16 +138,6 @@ func (h *authHandler) OnAuthorization(
 		return false, meta, nil
 	}
 	return true, meta, nil
-}
-
-// canonicalizeAuthorizedKey validates an armored SSH public key and returns
-// type + base64 without its optional comment or surrounding whitespace.
-func canonicalizeAuthorizedKey(authorized string) (string, error) {
-	key, _, _, _, err := ssh.ParseAuthorizedKey([]byte(authorized))
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key))), nil
 }
 
 // configHandler implements config.RequestHandler. This auth/config server does

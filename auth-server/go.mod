@@ -2,10 +2,7 @@ module dev.box/auth-server
 
 go 1.25.3
 
-require (
-	go.containerssh.io/containerssh v0.6.0
-	golang.org/x/crypto v0.48.0
-)
+require go.containerssh.io/containerssh v0.6.0
 
 require (
 	github.com/containerssh/gokrb5/v8 v8.4.3-0.20211214150832-4bf8b91123af // indirect
@@ -33,6 +30,7 @@ require (
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
+	golang.org/x/crypto v0.48.0 // indirect
 	golang.org/x/net v0.50.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
