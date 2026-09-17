@@ -54,15 +54,11 @@ different attribute — e.g. the raw `sshPublicKey`:
 
 - unset / `ssh_key_fingerprint` (default): exact-match filter on the derived fingerprint cache —
   one cheap API call. The production path.
-- any other value (e.g. `sshPublicKey`): the attribute holds the armored key material. The server
-  first probes the exact-match `attributes` filter with the canonical key — scalar, then
-  list-wrapped (authentik matches the attribute value as JSON with exact equality; a list-stored
-  attribute only matches an exactly-equal list query) — and falls back to scanning every user and
-  fingerprint-comparing each stored key line (handles comments, line breaks, and multi-key list
-  values). Integrity rules are identical: a key bound to more than one user is a 500, not an
-  accidental allow. Note the fallback walks every user page — for large directories store the
-  **canonical key without comment** (scalar, or a single-element list) so the exact probe hits, or
-  use the fingerprint index.
+- any other value (e.g. `sshPublicKey`): the attribute must be a **single-element JSON list**
+  containing the canonical armored key (`type + base64`, no comment). The server performs one exact
+  `attributes` filter query using that list. Exactly one result authenticates; zero or multiple
+  results deny cleanly. Scalar values, comments, extra whitespace, and multi-key lists deliberately
+  do not match. There is no full-directory fallback scan.
 - The authentik users API has no per-attribute query parameter (e.g. `?sshPublicKey=…`): unknown
   query params are silently ignored and return the full directory. The documented filter is the
   JSON `attributes` parameter (verified against authentik 2026.5.2).
@@ -84,7 +80,7 @@ different attribute — e.g. the raw `sshPublicKey`:
 | `AUTH_SERVER_ENFORCE_USERNAME` | `true` | require `ssh <user>@host` to equal the authentik **owner** of the key (prevents impersonation with a stolen key + known username) |
 | `AUTH_SERVER_PASSWORD_USERS` | — | comma-separated usernames allowed to use password auth (any password — **test/break-glass only, not verified**) |
 | `AUTH_SERVER_REQUIRE_GROUP` | — | group name; when set, `OnAuthorization` demands membership before session starts |
-| `AUTH_SERVER_KEY_ATTRIBUTE` | `ssh_key_fingerprint` | authentik attribute the presented key is looked up by; set e.g. `sshPublicKey` to match raw key material (see above) |
+| `AUTH_SERVER_KEY_ATTRIBUTE` | `ssh_key_fingerprint` | authentik attribute to search; custom raw-key attributes must be a single-element list containing the canonical key (see above) |
 | `AUTH_SERVER_SYNC_INTERVAL` | — (off) | normalizing sync interval, e.g. `30s`, `5m` (spec §5.3 option (a)) |
 | `AUTH_SERVER_SYNC_WRITE` | `true` | `false` runs the sync in dry-run (report only, no PATCHes) |
 

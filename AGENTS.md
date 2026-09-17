@@ -114,9 +114,10 @@ ssh ubuntu@dev.box.example.com
 | `ingress.enabled` / `ingress.tcp.*` | `false` / `ssh` | Traefik IngressRouteTCP (raw TCP) fronts the SSH port; **no cert-manager/TLS** — SSH is not HTTP |
 | `ssh.hostKey.existingSecret` / `.privateKey` | `""` | stable host key; else ephemeral key fallback |
 | `auth.*.webhook.url` | `""` | external password/publicKey/authz webhook URLs (v0.6 YAML keys: `password`, `publicKey`, `authz` — NOT `pubkey`); chart rendering requires password or publicKey unless **auto-wired to the bundled auth-server** |
-| `authServer.enabled` | `false` | deploy the bundled authentik-backed auth server + auto-wire `auth.password/pubkey/authz.webhook.url` |
+| `auth.*.webhook.timeout` | `30s` | per-request timeout; overall auth timeout defaults to 60s |
+| `authServer.enabled` | `false` | deploy the bundled authentik-backed auth server + auto-wire `auth.password/publicKey/authz.webhook.url` |
 | `authServer.authentik.url` / `.token` | `""` | authentik base URL + service token (or `tokenSecret` existing Secret) — **required** when enabled |
-| `authServer.authentik.keyAttribute` | `""` | authentik attribute the presented key is looked up by (`sshPublicKey` = raw-key debug mode; default: derived `ssh_key_fingerprint` index) |
+| `authServer.authentik.keyAttribute` | `""` | authentik attribute to search (`sshPublicKey` = one exact single-element-list query; default: derived `ssh_key_fingerprint` index) |
 | `kubernetes.sessionNamespace` | `containerssh-sessions` | where user pods run (chart force-manages) |
 | `kubernetes.mode` | `connection` | chart default; **dev.box target is `persistent`**, not yet fully wired |
 | `kubernetes.pod` | security hard defaults | base/fallback pod config |
@@ -153,6 +154,14 @@ ssh ubuntu@dev.box.example.com
   config via `structutils.Merge` = `mergo.Merge(dst, src, mergo.WithOverride)`. Empty/nil source
   fields are **skipped**, so partial per-template overrides are safe (proven by a mergo test); a
   template that only sets labels keeps the base pod's containers/spec.
+- **Backend images must contain `containerssh-agent`**: the base pod runs
+  `/usr/bin/containerssh-agent wait-signal ...`. Replacing only its image with plain
+  `ubuntu:22.04` inherits that command and fails with `stat /usr/bin/containerssh-agent: no such
+  file or directory`. Keep templates metadata-only unless the custom image implements the guest
+  image contract.
+- **Bundled webhook URLs need port `:8080`**, because their Services expose 8080 rather than port
+  80. The main SSH Service must additionally select `app.kubernetes.io/component: server`; the
+  shared name/instance selector alone also selects the auth/config pods and randomly misroutes SSH.
 - **Config server is fail-closed**: with `configserver.url` set, ContainerSSH *denies* connections
   when the config POST fails (retries every 10 s, non-200 = "Cannot authenticate at this time").
   Bundled server must be Ready before SSH works.
@@ -168,7 +177,11 @@ ssh ubuntu@dev.box.example.com
   key is also `auth.publicKey`. `authz` and `password` are plain struct keys.
 - **Auth server is also fail-closed**: with an `auth.*.webhook.url` set, a non-200/error from the
   auth request denies the connection (ContainerSSH retries until the method's `authTimeout`).
-  authentik must be reachable from the auth-server pod.
+  authentik must be reachable from the auth-server pod. Per-request webhook timeout is 30s.
+- **Custom raw-key lookup is strict and constant-cost**: `AUTH_SERVER_KEY_ATTRIBUTE=sshPublicKey`
+  performs one exact authentik filter for a single-element JSON list containing the canonical key
+  (`type + base64`, no comment). Exactly one user authenticates; zero or multiple users deny
+  cleanly. Scalar/commented/multi-key values do not match, and there is no directory scan.
 - **Key-first, password-by-test-only**: the bundled auth server never verifies a password against
   authentik; `authServer.passwordUsers` grants an UNVERIFIED password login (test/break-glass only).
   Fingerprints must be unique across users — the sync flags (and refuses to write) duplicates.
@@ -196,6 +209,7 @@ helm lint charts/containerssh --set auth.publicKey.webhook.url=https://auth.exam
 helm template smoke charts/containerssh -n containerssh \
   --set auth.publicKey.webhook.url=https://auth.example.test            # render
 tests/chart-auth-rendering.sh                                        # auth render matrix
+tests/chart-service-selector.sh                                      # SSH Service isolation
 helm package charts/containerssh -d /tmp/sshtest
 
 # config server
@@ -223,34 +237,34 @@ The rendered config is validated this way after every template change that alter
 - Target cluster context: **`container-ssh`** (created; control plane reachable).
   Current default context is `ai-platform` — pass `--kube-context container-ssh` explicitly
   (helm) / `--context container-ssh` (kubectl).
-- A failed smoke-test release exists in namespace `containerssh`: Helm revision 2 is
-  `pending-upgrade` after an aborted upgrade. The config-server and ContainerSSH pods are currently
-  Ready, but the mounted config is the omission-only auth draft and has no usable authenticator.
-  Treat this as failed test state; uninstall it only as the first step of
-  `tests/cluster-deployment-spec.md`.
-  Ingress remains disabled (ClusterIP + port-forward).
-- **Config-server image built & smoke-tested locally** (`config-server:dev`, Docker; verified
-  `ubuntu@…` → `ubuntu:22.04` template, unknown user → base). CI to publish it to
-  `ghcr.io/tu-wien-datalab/dev.box/config-server` is in `.github/workflows/config-server-image.yml`
-  (runs on push to `main`; needs the GHCR package pullable — public, or an `imagePullSecrets` entry).
-  `configServer.image.repository` already defaults to that GHCR path.
-- **Auth-server built & unit-tested locally** (`go build/vet/test` green, incl. race). CI to publish
-  it to `ghcr.io/tu-wien-datalab/dev.box/auth-server` is in `.github/workflows/auth-server-image.yml`.
-  `authServer.image.repository` already defaults to that GHCR path. Not image-built/smoke-tested with
-  Docker yet (Docker daemon was off during implementation).
+- Helm release `containerssh` revision 8 is **deployed** in namespace `containerssh` with chart
+  `0.1.5`; ContainerSSH, auth-server, and config-server are all Ready. Ingress remains disabled
+  (ClusterIP + local port-forward).
+- GHCR images for both bundled servers are published and deployed from their `main` tags. The
+  authentik read token and stable host key are mounted from existing Secrets
+  (`containerssh-authentik-token`, `containerssh-host-key`).
+- A real connection-mode SSH check passed on 2026-09-17:
+  `ssh -i ~/.ssh/slurm_tu_wien -o IdentitiesOnly=yes -p 2222 ubuntu@localhost 'printf READY'`.
+  It crossed ContainerSSH → auth-server → production authentik → config-server → guest pod and
+  returned `READY`; the connection pod was deleted after disconnect as expected.
+- The live `ubuntu` template is metadata-only and therefore retains
+  `containerssh/containerssh-guest-image`. The revision-8 auth-server image still uses the old
+  `attributes.sshPublicKey` scan fallback with username enforcement disabled. Current source has
+  removed that fallback; do not roll out its next image until the enrolled value is normalized to a
+  single-element list containing the canonical comment-free key.
 
-Remaining before the staged cluster validation:
+Remaining before the staged persistent-mode validation:
   1. Implement the persistent-mode contract in the chart/config server: render
      `mode: persistent` and `createMissingPods: true`, derive a stable, collision-resistant
      DNS-1123 `metadata.name` from the canonical authenticated user (`authenticatedUsername`), stop
      relying on `generateName`, define explicit deletion/retention behavior, and add
      disconnect/reconnect coverage.
-  2. Enroll a dedicated test user/key in production authentik and ensure its fingerprint attribute is
-     present; create a read-only service token in an existing Kubernetes Secret.
-  3. Create or choose a stable SSH host-key Secret.
-  4. Uninstall the current `pending-upgrade` release according to
-     `tests/cluster-deployment-spec.md`, then clean-install the bundled auth/config servers.
-  5. Optional, later: `ingress.enabled=true` + the one-time Traefik TCP entrypoint/port setup
+  2. Normalize the enrolled `attributes.sshPublicKey` value and deploy the strict exact-lookup
+     auth-server image; then settle the SSH username vs canonical authentik identity policy before
+     enabling username enforcement. The fingerprint index remains an alternative exact lookup.
+  3. Pin both bundled images to immutable SHA tags and run the remaining negative, policy, and
+     fail-closed stages in `tests/cluster-deployment-spec.md`.
+  4. Optional, later: `ingress.enabled=true` + the one-time Traefik TCP entrypoint/port setup
      (see values.yaml `ingress`, NOTES.txt).
 
 Current auth/config smoke-install command (no ingress; still uses the chart's non-target

@@ -4,6 +4,7 @@ metadata:
   name: {{ include "containerssh.fullname" . }}
   labels:
     {{- include "containerssh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
@@ -13,6 +14,7 @@ spec:
     metadata:
       labels:
         {{- include "containerssh.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: server
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

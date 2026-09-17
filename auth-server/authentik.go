@@ -82,9 +82,9 @@ type authentikConfig struct {
 	//
 	//	"" / "ssh_key_fingerprint" (default) — exact-match filter on the derived
 	//	  fingerprint cache attribute, one cheap API call (spec §4).
-	//	any other value (e.g. "sshPublicKey") — the attribute holds the armored
-	//	  key material itself; lookups try an exact match on the canonical key
-	//	  line and fall back to fingerprint-scanning the stored keys.
+	//	any other value (e.g. "sshPublicKey") — the attribute must be a
+	//	  single-element JSON list containing the canonical armored key. Lookup
+	//	  is one exact attribute-filter query; there is no directory scan.
 	KeyAttribute string
 	// HTTPClient is the configured HTTP(S) client (custom CA / insecure allowed).
 	HTTPClient *http.Client
@@ -146,114 +146,40 @@ func (c *authentikClient) lookupUser(
 	fingerprint, canonicalKey string,
 ) (*authentikUser, error) {
 	if keyAttr := c.cfg.KeyAttribute; keyAttr != "" && keyAttr != attrSSHKeyFingerprint {
-		return c.lookupByKeyAttribute(ctx, keyAttr, fingerprint, canonicalKey)
+		return c.lookupByKeyAttribute(ctx, keyAttr, canonicalKey)
 	}
 	return c.lookupByFingerprint(ctx, fingerprint)
 }
 
-// lookupByKeyAttribute finds the user whose attributes.<keyAttribute> holds the
-// presented SSH key.
+// lookupByKeyAttribute performs one exact authentik attribute-filter query for
+// a single-element JSON list containing the canonical key. ContainerSSH sends
+// key type + base64 only, so stored comments, extra whitespace, scalar values,
+// and multi-key lists deliberately do not match.
 //
-// authentik's `attributes` filter matches the attribute value as JSON with
-// exact equality (verified against authentik 2026.5.2: a scalar query misses a
-// list-stored attribute, and a list query must equal the whole list — no
-// membership/partial matching). Stored key material is freeform (comments,
-// line breaks, list wrapping), so two cheap exact probes run first — scalar
-// and list-wrapped canonical key — and only when both find nothing does the
-// full user scan run, fingerprint-comparing every stored key line.
-//
-// Note: the fallback walks every user page. Fast storage = canonical key,
-// scalar or single-element list. The fingerprint index (default mode) stays
-// the production path.
+// Exactly one result authenticates. Zero or multiple results return no owner
+// and are denied cleanly by OnPubKey. API/transport failures remain errors so
+// infrastructure trouble is distinguishable from an authentication denial.
 func (c *authentikClient) lookupByKeyAttribute(
 	ctx context.Context,
-	keyAttribute, fingerprint, canonicalKey string,
+	keyAttribute, canonicalKey string,
 ) (*authentikUser, error) {
-	for _, value := range []interface{}{
-		canonicalKey,
-		[]interface{}{canonicalKey},
-	} {
-		filter, err := json.Marshal(map[string]interface{}{keyAttribute: value})
-		if err != nil {
-			return nil, fmt.Errorf("failed to encode attribute filter: %w", err)
-		}
-		page, err := c.listUsers(ctx, c.usersURL(url.Values{
-			"attributes": {string(filter)},
-		}))
-		if err != nil {
-			return nil, err
-		}
-		switch page.Pagination.Count {
-		case 1:
-			user := page.Results[0]
-			return &user, nil
-		case 0:
-			// Try the next probe, then the scan below.
-		default:
-			return nil, fmt.Errorf(
-				"key %s is bound to %d users (%s, ...) via attributes.%s: key uniqueness violated",
-				fingerprint, page.Pagination.Count, page.Results[0].Username, keyAttribute,
-			)
-		}
+	filter, err := json.Marshal(map[string]interface{}{
+		keyAttribute: []string{canonicalKey},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode attribute filter: %w", err)
 	}
-
-	users, err := c.listAllUsers(ctx)
+	page, err := c.listUsers(ctx, c.usersURL(url.Values{
+		"attributes": {string(filter)},
+	}))
 	if err != nil {
 		return nil, err
 	}
-	var matches []*authentikUser
-	for i := range users {
-		user := &users[i]
-		for _, line := range attributeKeyLines(user.Attributes[keyAttribute]) {
-			stored, err := fingerprintFromAuthorizedKey(line)
-			if err != nil {
-				continue // not a (valid) key line
-			}
-			if stored == fingerprint {
-				matches = append(matches, user)
-				break
-			}
-		}
-	}
-	switch len(matches) {
-	case 0:
+	if page.Pagination.Count != 1 || len(page.Results) != 1 {
 		return nil, nil
-	case 1:
-		return matches[0], nil
-	default:
-		return nil, fmt.Errorf(
-			"key %s is bound to %d users (%s, ...) via attributes.%s: key uniqueness violated",
-			fingerprint, len(matches), matches[0].Username, keyAttribute,
-		)
 	}
-}
-
-// attributeKeyLines normalizes an attribute value that may hold key material —
-// a single string (possibly multi-line) or a JSON list of strings — into
-// individual authorized_keys lines.
-func attributeKeyLines(value interface{}) []string {
-	switch v := value.(type) {
-	case string:
-		lines := strings.Split(v, "\n")
-		for i := range lines {
-			lines[i] = strings.TrimSpace(lines[i])
-		}
-		return lines
-	case []interface{}:
-		var lines []string
-		for _, item := range v {
-			if s, ok := item.(string); ok {
-				for _, part := range strings.Split(s, "\n") {
-					if line := strings.TrimSpace(part); line != "" {
-						lines = append(lines, line)
-					}
-				}
-			}
-		}
-		return lines
-	default:
-		return nil
-	}
+	user := page.Results[0]
+	return &user, nil
 }
 
 // userInGroup reports whether the user with exactly this username is a member
@@ -272,13 +198,11 @@ func (c *authentikClient) userInGroup(ctx context.Context, username, group strin
 
 // listAllUsers returns every authentik user (all pages), in username order.
 //
-// Two performance facts drive the design: authentik silently clamps page_size
-// to 100 (a 2026-09-15 measurement against a 3.6k-user directory), and the
-// debug-mode key scan (and the sync) need the FULL directory per pass.
-// Sequential paging of 37+ pages exceeds ContainerSSH's 10s webhook client
-// timeout, so the pages after the first are fetched concurrently (bounded at
+// The optional sync needs the FULL directory per pass. Authentik silently
+// clamps page_size to 100 (measured against a 3.6k-user directory), so pages
+// after the first are fetched concurrently (bounded at
 // maxConcurrentUserPages workers). The first page is fetched sequentially to
-// learn the pagination totals.
+// learn the pagination totals. Authentication does not use this scan.
 const (
 	usersPageSize          = 100
 	maxConcurrentUserPages = 8

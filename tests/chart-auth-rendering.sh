@@ -42,7 +42,8 @@ assert_config() {
     config = YAML.load(STDIN.read)
     auth = config.fetch("auth")
     scenario = ARGV.fetch(0)
-    bundled = "http://auth-test-containerssh-auth-server.containerssh.svc.cluster.local"
+    bundled = "http://auth-test-containerssh-auth-server.containerssh.svc.cluster.local:8080"
+    bundled_config = "http://auth-test-containerssh-config-server.containerssh.svc.cluster.local:8080"
 
     case scenario
     when "password"
@@ -60,6 +61,7 @@ assert_config() {
       auth.each_value do |method|
         abort "wrong bundled URL" unless method.dig("webhook", "url") == bundled
       end
+      abort "wrong bundled config URL" unless config.dig("configserver", "url") == bundled_config
     when "mixed"
       abort "wrong password override" unless auth.dig("password", "webhook", "url") == "https://password.example.test"
       abort "wrong bundled pubkey URL" unless auth.dig("publicKey", "webhook", "url") == bundled
@@ -71,6 +73,7 @@ assert_config() {
     auth.each do |name, method|
       abort "#{name} method is not webhook" unless method["method"] == "webhook"
       abort "#{name} has an empty URL" if method.dig("webhook", "url").to_s.empty?
+      abort "#{name} has the wrong request timeout" unless method.dig("webhook", "timeout") == "30s"
     end
   ' "$scenario"
   printf 'OK   %s\n' "$name"
@@ -87,10 +90,11 @@ assert_config "external public key only" publicKey \
 assert_config "external public key plus authorization" publicKey-authz \
   --set auth.publicKey.webhook.url=https://pubkey.example.test \
   --set auth.authz.webhook.url=https://authz.example.test
-assert_config "bundled auth server" bundled \
+assert_config "bundled auth and config servers" bundled \
   --set authServer.enabled=true \
   --set authServer.authentik.url=https://authentik.example.test \
-  --set authServer.authentik.tokenSecret=authentik-read-token
+  --set authServer.authentik.tokenSecret=authentik-read-token \
+  --set configServer.enabled=true
 assert_config "explicit method overrides bundled URL" mixed \
   --set authServer.enabled=true \
   --set authServer.authentik.url=https://authentik.example.test \

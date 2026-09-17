@@ -62,7 +62,7 @@ data:
       level: {{ .Values.log.level }}
     {{- $configServerURL := .Values.configserver.url }}
     {{- if and .Values.configServer.enabled (not .Values.configserver.url) }}
-    {{- $configServerURL = printf "http://%s-config-server.%s.svc.cluster.local" (include "containerssh.fullname" .) .Release.Namespace }}
+    {{- $configServerURL = printf "http://%s-config-server.%s.svc.cluster.local:8080" (include "containerssh.fullname" .) .Release.Namespace }}
     {{- end }}
     {{- if $configServerURL }}
     configserver:
@@ -87,7 +87,7 @@ data:
     {{- end }}
     {{- $authURL := "" }}
     {{- if .Values.authServer.enabled }}
-    {{- $authURL = printf "http://%s-auth-server.%s.svc.cluster.local" (include "containerssh.fullname" .) .Release.Namespace }}
+    {{- $authURL = printf "http://%s-auth-server.%s.svc.cluster.local:8080" (include "containerssh.fullname" .) .Release.Namespace }}
     {{- end }}
     {{- $passwordURL := default $authURL .Values.auth.password.webhook.url }}
     {{- $publicKeyURL := default $authURL .Values.auth.publicKey.webhook.url }}
@@ -101,17 +101,20 @@ data:
         method: webhook
         webhook:
           url: {{ $passwordURL | quote }}
+          timeout: {{ default "30s" .Values.auth.password.webhook.timeout | quote }}
     {{- end }}
     {{- if $publicKeyURL }}
       publicKey:
         method: webhook
         webhook:
           url: {{ $publicKeyURL | quote }}
+          timeout: {{ default "30s" .Values.auth.publicKey.webhook.timeout | quote }}
     {{- end }}
     {{- if $authzURL }}
       authz:
         method: webhook
         webhook:
           url: {{ $authzURL | quote }}
+          timeout: {{ default "30s" .Values.auth.authz.webhook.timeout | quote }}
     {{- end }}
 {{- end }}

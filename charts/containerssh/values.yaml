@@ -188,6 +188,9 @@ auth:
     method: webhook
     webhook:
       url: ""   # REQUIRED for password auth: URL of your authentication server
+      # Per-request timeout. Keep below authTimeout (60s); bundled authentik
+      # key-material scans may take several seconds on large directories.
+      timeout: 30s
   # NOTE the YAML key: ContainerSSH v0.6 renders this section under
   # `auth.publicKey` — `auth.pubkey` is the *deprecated* boolean flag and the
   # real binary REJECTS a map there ("cannot unmarshal !!map into bool").
@@ -195,10 +198,12 @@ auth:
     method: webhook
     webhook:
       url: ""   # SSH public-key auth (authentik-backed via authServer)
+      timeout: 30s
   authz:
     method: webhook
     webhook:
       url: ""   # post-auth authorization (optional group gate)
+      timeout: 30s
 
 # Configuration server (webhook): a per-connection config endpoint that ContainerSSH
 # calls and MERGES over the base config above. With the bundled configServer.enabled
@@ -287,9 +292,9 @@ authServer:
     # AUTH_SERVER_KEY_ATTRIBUTE: which authentik user attribute the presented
     # SSH key is looked up by. Empty = the derived fingerprint cache
     # attributes.ssh_key_fingerprint (spec default: one exact-match API call).
-    # Set to e.g. "sshPublicKey" to match the raw armored key stored on users
-    # (debug/compat mode: exact-match attempt on the canonical key, then a full
-    # user scan comparing fingerprints — see auth-server/README.md).
+    # Set to e.g. "sshPublicKey" for one exact raw-key lookup. The attribute
+    # must be a single-element JSON list containing the canonical key
+    # (type + base64, no comment); zero or multiple matches deny authentication.
     keyAttribute: ""
   # AUTH_SERVER_ENFORCE_USERNAME: require ssh <user>@host to equal the authentik
   # owner of the key (prevents impersonation).

@@ -87,8 +87,8 @@ func (h *authHandler) OnPassword(
 //  1. canonicalize   ssh.ParseAuthorizedKey + ssh.FingerprintSHA256
 //  2. lookup         by attributes.<keyAttribute>:
 //     ssh_key_fingerprint (default) → exact "SHA256:..." filter;
-//     e.g. sshPublicKey → exact canonical-key filter, then a
-//     fingerprint scan of the stored keys
+//     e.g. sshPublicKey → one exact filter for a single-element list
+//     containing the canonical key (no comment); no directory scan
 //  3. decide         0 users -> deny; exactly 1 -> verify username binding;
 //     >1 -> integrity error (server-side, 500)
 //  4. infra errors   -> return err so ContainerSSH replies 500 and retries

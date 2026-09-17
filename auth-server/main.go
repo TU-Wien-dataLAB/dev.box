@@ -240,7 +240,7 @@ func lookupModeDescription(keyAttribute string) string {
 	if keyAttribute == "" || keyAttribute == attrSSHKeyFingerprint {
 		return "fingerprint index on attributes." + attrSSHKeyFingerprint
 	}
-	return fmt.Sprintf("key material on attributes.%s (exact match, scan fallback)", keyAttribute)
+	return fmt.Sprintf("key material on attributes.%s (single exact list match, no scan)", keyAttribute)
 }
 
 // parsePasswordUsers splits the comma-separated allowlist into a set.

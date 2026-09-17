@@ -4,6 +4,7 @@ metadata:
   name: {{ include "containerssh.fullname" . }}
   labels:
     {{- include "containerssh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
   {{- with .Values.service.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
@@ -12,6 +13,7 @@ spec:
   type: {{ .Values.service.type }}
   selector:
     {{- include "containerssh.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: server
   ports:
     - name: ssh
       port: {{ int .Values.service.port }}

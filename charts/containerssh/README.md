@@ -172,6 +172,7 @@ See `values.yaml` for the complete, annotated list. Highlights:
 | `kubernetes.pod.metadata` | `{}` | Pod metadata extended and merged with defaults |
 | `kubernetes.pod.spec` | backend user-container defaults | Full pod spec (image, volumes, resources, nodeName, securityContext…) |
 | `auth.*.webhook.url` | `""` | External auth webhooks; password or publicKey is required unless the bundled auth server is enabled. **v0.6 gotcha:** the YAML key is `publicKey` — `auth.pubkey` is a deprecated boolean flag and the real binary rejects a map there (`cannot unmarshal !!map into bool`) |
+| `auth.*.webhook.timeout` | `30s` | Per-request timeout, kept below the 60s overall authentication timeout |
 | `authServer.enabled` | `false` | Deploy the bundled authentik-backed auth server and wire it |
 | `service.type`, `service.port` | `ClusterIP`, `2222` | SSH service type/port |
 | `ingress.enabled` | `false` | Expose SSH via a Traefik `IngressRouteTCP` (raw TCP) |
@@ -188,7 +189,7 @@ See `values.yaml` for the complete, annotated list. Highlights:
 | `authServer.authentik.url` | `""` | authentik base URL (required when `authServer.enabled`) |
 | `authServer.authentik.token` | `""` | authentik service token (chart creates a Secret) |
 | `authServer.authentik.tokenSecret` | `""` | existing Secret with the token (preferred over `token`) |
-| `authServer.authentik.keyAttribute` | `""` | authentik attribute the presented key is looked up by; set `sshPublicKey` to match raw key material (debug/compat; default: derived `ssh_key_fingerprint` index) |
+| `authServer.authentik.keyAttribute` | `""` | authentik attribute to search; `sshPublicKey` uses one exact query for a single-element list containing the canonical key (default: derived `ssh_key_fingerprint` index) |
 | `authServer.syncInterval` | `""` | normalizing+fingerprint sync interval, e.g. `5m` |
 
 ## Per-username pod templates
@@ -221,16 +222,13 @@ kubernetes:
           image: containerssh/containerssh-guest-image
   podTemplates:
     - name: ubuntu
-      spec:
-        containers:
-          - name: shell
-            image: ubuntu:22.04
-            command: ["/bin/bash"]
+      metadata:
+        labels:
+          dev-box-template: ubuntu
     - name: default
-      spec:
-        containers:
-          - name: shell
-            image: containerssh/containerssh-guest-image
+      metadata:
+        labels:
+          dev-box-template: default
 ```
 
 Templates are **partial** `kubernetes.pod` overrides — unset fields (mode, metadata, spec, limits,
@@ -248,6 +246,9 @@ helm install containerssh . \
 ```
 
 **Caveats:**
+- **Guest image contract**: keep metadata-only templates unless the replacement image contains
+  `/usr/bin/containerssh-agent`. A plain image such as `ubuntu:22.04` inherits the agent command
+  from the base pod but fails at startup because the binary is absent.
 - **Fail-closed**: while `configserver.url` is set (auto when the bundled server is enabled),
   ContainerSSH *denies* connections when the config request errors — the server must be up.
 - **One config per connection**: a connection always uses the single config it fetched. In
@@ -283,7 +284,7 @@ authServer:
 ```
 
 When enabled the chart: creates a Secret (from `token`, or reuses `tokenSecret`), deploys the
-server next to ContainerSSH, and auto-wires `auth.password/pubkey/authz.webhook.url` to its
+server next to ContainerSSH, and auto-wires `auth.password/publicKey/authz.webhook.url` to its
 Service (`http://<release>-auth-server.<ns>.svc.cluster.local:8080`). SSH in with the authentik
 username whose key is enrolled:
 
@@ -301,6 +302,9 @@ See `auth-server/README.md` for all env knobs and the lookup flow.
   auth request errors — authentik must be reachable from this pod.
 - **Password stays off** on the server by default; the `AUTH_SERVER_PASSWORD_USERS` escape hatch
   (`authServer.passwordUsers`) grants logins with an unverified password — test/break-glass only.
+- **Raw-key equality is strict**: with `authServer.authentik.keyAttribute=sshPublicKey`, the stored
+  value must be a single-element list containing `type + base64` without a comment. Zero or multiple
+  exact matches deny cleanly; there is no directory scan.
 - **Key uniqueness is your contract**: one fingerprint may only ever belong to one user; the sync
   flags (and refuses to write) duplicates.
 
