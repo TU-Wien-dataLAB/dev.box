@@ -78,6 +78,30 @@ printf '%s' "$config" | ruby -ryaml -e '
 '
 printf 'OK   connection mode keeps generateName, no createMissingPods\n'
 
+# --- config changes roll the main ContainerSSH deployment --------------------
+deployment_checksum() {
+  render_all "$@" |
+    ruby -ryaml -e '
+      docs = YAML.load_stream(STDIN.read).compact
+      deployment = docs.find { |d| d["kind"] == "Deployment" && d.dig("metadata", "name") == "persistent-test-containerssh" }
+      abort "ContainerSSH Deployment not rendered" unless deployment
+      print deployment.dig("spec", "template", "metadata", "annotations", "checksum/config").to_s
+    '
+}
+connection_checksum="$(deployment_checksum --set kubernetes.mode=connection \
+  --set auth.publicKey.webhook.url=https://auth.example.test)"
+persistent_checksum="$(deployment_checksum --set auth.publicKey.webhook.url=https://auth.example.test \
+  --set configServer.enabled=true)"
+if [[ -z "$connection_checksum" || -z "$persistent_checksum" ]]; then
+  printf 'FAIL main Deployment has no config checksum annotation\n' >&2
+  exit 1
+fi
+if [[ "$connection_checksum" == "$persistent_checksum" ]]; then
+  printf 'FAIL config checksum did not change between connection and persistent modes\n' >&2
+  exit 1
+fi
+printf 'OK   config changes roll the main ContainerSSH deployment\n'
+
 # --- persistent without a config server fails rendering ----------------------
 if output="$(render_all --set authServer.enabled=true \
   --set authServer.authentik.url=https://authentik.example.test \

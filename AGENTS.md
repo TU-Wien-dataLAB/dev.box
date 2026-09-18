@@ -205,6 +205,11 @@ ssh ubuntu@dev.box.example.com
   permission.
 - **Config file loading applies struct defaults** (`structutils.Defaults` in
   `internal/config/loader_reader.go`) — the chart only renders what it overrides.
+- **Generated config changes must restart ContainerSSH.** The main Deployment carries a
+  `checksum/config` pod-template annotation derived from the chart-managed ConfigMap. Without it,
+  a Helm upgrade can leave the old process running with stale mode/settings (observed during the
+  first persistent rollout). An external `existingConfigMap` cannot be checksummed by Helm;
+  restart the Deployment manually after changing that object.
 - **`default` is a reserved template name** — it's the catch-all in the config server.
 - **User pods vs. ContainerSSH pod**: the chart ships security defaults for backend user pods
   (`runAsNonRoot`, `runAsUser: 1000`, `allowPrivilegeEscalation: false`, cpu/mem limits). The
@@ -254,18 +259,18 @@ representative persistent and non-persistent webhook merges to the real
 - Target cluster context: **`container-ssh`** (created; control plane reachable).
   Current default context is `ai-platform` — pass `--kube-context container-ssh` explicitly
   (helm) / `--context container-ssh` (kubectl).
-- Helm release `containerssh` revision 14 is **deployed** in namespace `containerssh` with chart
-  `0.1.10` (the persistent-mode contract landed in chart `0.2.0` — the deployed release still runs
-  `0.1.10` in `connection` mode and is NOT the target state); ContainerSSH, auth-server, and
-  config-server are all Ready. Ingress remains disabled (ClusterIP + local port-forward).
-- The auth-server is pinned to immutable tag `sha-c08f0dc` (image digest
-  `sha256:e6f410106d5eac1dd82942a5451fee4a8c7e5ef424cd3059d9f30a360718a291`); the config-server
-  still uses `main`. The authentik read token and stable host key are mounted from existing Secrets
-  (`containerssh-authentik-token`, `containerssh-host-key`).
-- A real connection-mode SSH check passed on 2026-09-17:
-  `ssh -i ~/.ssh/slurm_tu_wien -o IdentitiesOnly=yes -p 2222 ubuntu@localhost 'printf READY'`.
-  It crossed ContainerSSH → auth-server → production authentik → config-server → guest pod and
-  returned `READY`; the connection pod was deleted after disconnect as expected.
+- Helm release `containerssh` revision 16 is **deployed** in namespace `containerssh` with chart
+  `0.2.1` in persistent mode; ContainerSSH, auth-server, and config-server are all Ready. Ingress
+  remains disabled (ClusterIP + local port-forward). Chart 0.2.1 adds the generated-config checksum
+  that automatically restarted ContainerSSH for this rollout.
+- Both bundled servers are pinned to immutable tag `sha-dfa829e`. The authentik read token and
+  stable host key are mounted from existing Secrets (`containerssh-authentik-token`,
+  `containerssh-host-key`).
+- A real persistent-mode reconnect check passed on 2026-09-18: two sequential
+  `ssh -i ~/.ssh/slurm_tu_wien -o IdentitiesOnly=yes -p 2222 ubuntu@localhost 'printf READY'`
+  connections crossed ContainerSSH → auth-server → production authentik → config-server → guest
+  pod and reused the same Running pod (`box-8bbfc143fa`, owner label `matthias.matt`). The pod
+  remained after both disconnects, as required.
 - The live `ubuntu` template is metadata-only and therefore retains
   `containerssh/containerssh-guest-image`. Authentication uses one exact
   `attributes.sshPublicKey` list query with username enforcement disabled. The enrolled value is a
@@ -285,12 +290,12 @@ Remaining before the staged persistent-mode validation:
      canonical authenticated user (`authenticatedUsername`) + resolved template, labels boxes
      `dev.box/owner`, and enforces the per-owner cap (`configServer.maxPodsPerUser`, default 3;
      reconnect-exempt, fail-closed on listing errors and empty identities). Deletion/retention is
-     explicit: no auto-deletion anywhere, documented in the chart README/NOTES. Disconnect/reconnect
-     coverage still needs the staged cluster plan below.
-  2. Pin the config-server image to an immutable SHA tag and run the remaining negative, policy,
-     and fail-closed stages in `tests/cluster-deployment-spec.md` (includes the disconnect/reconnect
-     and cap-acceptance stages).
-  3. Optional, later: `ingress.enabled=true` + the one-time Traefik TCP entrypoint/port setup
+     explicit: no auto-deletion anywhere, documented in the chart README/NOTES. The real-cluster
+     disconnect/reconnect stage passed on 2026-09-18.
+  2. ✅ Both bundled images are pinned to immutable `sha-dfa829e` tags.
+  3. Run the remaining cap-boundary, negative, policy, and fail-closed stages in
+     `tests/cluster-deployment-spec.md`.
+  4. Optional, later: `ingress.enabled=true` + the one-time Traefik TCP entrypoint/port setup
      (see values.yaml `ingress`, NOTES.txt).
 
 Current auth/config smoke-install command (no ingress; the chart's default is now

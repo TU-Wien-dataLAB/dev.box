@@ -101,6 +101,9 @@ clients cannot bypass them.
   $SESSION_NAMESPACE`, owner label `dev.box/owner=<user>`).
 - Changes to a pod template do not update an already-created persistent pod; because the pod name
   is deterministic, operators can recreate/migrate the named pod deliberately to apply changes.
+- The chart adds a checksum of its generated `config.yaml` to the main Deployment, so Helm config
+  changes restart ContainerSSH and load the new mode/settings. If `existingConfigMap` is used, Helm
+  cannot checksum that external object; restart the Deployment after changing it.
 
 ## Install
 
