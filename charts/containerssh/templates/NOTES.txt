@@ -56,6 +56,17 @@ secures the transport itself).
     If the pod is not Ready, the image may be missing — build/push it (see config-server README).
 {{- end }}
 
+{{- if eq .Values.kubernetes.mode "persistent" }}
+2c. PERSISTENT MODE (default): each authenticated user gets ONE box per pod template,
+    capped at {{ .Values.configServer.maxPodsPerUser }} (configServer.maxPodsPerUser).
+    The box identity comes from the authenticated username (dev.box/owner label), and the
+    deterministic pod name is injected by the config server. Reconnecting lands in the same
+    pod; spawning a new box at the cap is denied; reconnects always pass.
+    REMEMBER: the writable layer lives and dies WITH the pod (deletion/eviction/node loss wipes
+    it — mount a PVC for durable data). Pods are never deleted automatically; to bin a box:
+      kubectl -n {{ .Values.kubernetes.sessionNamespace }} delete pod -l dev.box/owner=<user>
+{{- end }}
+
 3. Per-session pods are launched in namespace {{ .Values.kubernetes.sessionNamespace }}.
    ContainerSSH needs a Role/RoleBinding there to create pods
    (this chart creates it when rbac.enabled=true). A NetworkPolicy there allows

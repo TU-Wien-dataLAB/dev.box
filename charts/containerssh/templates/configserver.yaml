@@ -4,6 +4,10 @@ Rendered only when configServer.enabled=true: a ConfigMap with the pod templates
 from values.kubernetes.podTemplates, plus a Deployment and a Service that serve
 the template matching the SSH username, then default.yaml. configserver.url is auto-wired to
 this Service in configmap.yaml.
+
+The server gets its OWN ServiceAccount with a Role limited to LISTING pods in the
+session namespace — the only Kubernetes permission the persistent-mode box cap
+needs (the main ContainerSSH Role/RoleBinding for pod management is unchanged).
 */}}
 {{- if .Values.configServer.enabled }}
 ---
@@ -32,6 +36,46 @@ data:
     {{- end }}
   {{- end }}
 ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "containerssh.fullname" . }}-config-server
+  labels:
+    {{- include "containerssh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: config-server
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "containerssh.fullname" . }}-config-server
+  namespace: {{ .Values.kubernetes.sessionNamespace }}
+  labels:
+    {{- include "containerssh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: config-server
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    # The persistent-mode box cap only lists live pods by owner label; no
+    # create/get/watch/delete — least privilege by design.
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "containerssh.fullname" . }}-config-server
+  namespace: {{ .Values.kubernetes.sessionNamespace }}
+  labels:
+    {{- include "containerssh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: config-server
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "containerssh.fullname" . }}-config-server
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: {{ include "containerssh.fullname" . }}-config-server
+  apiGroup: rbac.authorization.k8s.io
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -51,6 +95,7 @@ spec:
         {{- include "containerssh.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: config-server
     spec:
+      serviceAccountName: {{ include "containerssh.fullname" . }}-config-server
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -75,6 +120,15 @@ spec:
               value: 0.0.0.0:8080
             - name: CONTAINERSSH_LOG_LEVEL
               value: {{ .Values.configServer.logLevel | quote }}
+            # Persistent-mode identity/label injection + box cap are turned on by
+            # rendering the chart's kubernetes.mode into the server. The server
+            # reaches the Kubernetes API in-cluster via its own ServiceAccount.
+            - name: CONTAINERSSH_OPERATING_MODE
+              value: {{ .Values.kubernetes.mode | quote }}
+            - name: CONTAINERSSH_SESSION_NAMESPACE
+              value: {{ .Values.kubernetes.sessionNamespace | quote }}
+            - name: CONTAINERSSH_MAX_PODS_PER_USER
+              value: {{ .Values.configServer.maxPodsPerUser | quote }}
           readinessProbe:
             tcpSocket:
               port: http

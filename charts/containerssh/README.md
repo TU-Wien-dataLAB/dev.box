@@ -2,7 +2,8 @@
 
 Deploys [ContainerSSH](https://containerssh.io/) with its Kubernetes backend. The chart supports
 ContainerSSH's connection, session, and persistent pod lifecycles. The **dev.box deployment target
-is persistent mode**: each authenticated user reuses a stable pod across SSH disconnects.
+is persistent mode** (the chart default): each authenticated user reuses a stable pod across SSH
+disconnects, with a configurable cap on how many boxes one user may keep.
 
 This chart is modeled on the official documentation:
 
@@ -21,6 +22,7 @@ This chart is modeled on the official documentation:
 | `NetworkPolicy` *(optional)* | Backend user pods: no ingress, egress to the public internet only |
 | `Secret` *(optional)* | Stable SSH host key (see below) |
 | `Deployment` + `Service` *(optional)* | Bundled authentik-backed auth server (`authServer.enabled`) |
+| `Deployment` + `Service` + `ServiceAccount` + `Role`/`RoleBinding` *(optional)* | Bundled config server (`configServer.enabled`) — its own ServiceAccount holds **list-only** permission on pods in the session namespace, just enough for the persistent-mode box cap |
 | `Service` | Exposes the SSH port (ClusterIP by default) |
 | `test-connection` Job | `helm test` smoke check that the SSH port is reachable |
 
@@ -56,36 +58,60 @@ kubernetes:
 > (`containerssh-sessions`) so that ContainerSSH itself does not share a namespace with the
 > untrusted pods it accesses or spawns, as recommended in the reference.
 
-## Persistent mode (dev.box target)
+## Persistent mode (dev.box target — the chart default)
 
-ContainerSSH v0.6 persistent mode looks up an exact pod by
-`kubernetes.pod.metadata.name`, executes SSH channels in that pod, and skips pod removal when the
-SSH connection closes. With `createMissingPods: true`, it creates the named pod on first use; with
-that setting false, the pod must already exist.
+ContainerSSH v0.6 persistent mode looks up an exact pod by `kubernetes.pod.metadata.name`,
+executes SSH channels in that pod, and skips pod removal when the SSH connection closes. The chart
+default is `kubernetes.mode: persistent` with `createMissingPods: true`; the config server supplies
+the request-specific `metadata.name` and also sets `createMissingPods: true`, so the named pod is
+created on first use and reused afterwards. If any chart-managed template explicitly selects
+`connection` or `session`, the chart omits base-level `createMissingPods` and leaves it to each
+persistent response: ContainerSSH's merge cannot clear a true boolean, so an unconditional base
+true would make that non-persistent template invalid.
 
-The intended dev.box lifecycle is:
+The box identity is provided by the **config server** at connection time:
 
-1. derive one deterministic, collision-resistant DNS-1123 pod name from the canonical authenticated
-   user (`authenticatedUsername`);
-2. use `mode: persistent` and `createMissingPods: true` to create it on demand;
-3. reuse that same pod name and pod across reconnects; and
-4. remove it only through an explicit administrative lifecycle/cleanup policy.
+1. the bundled config server derives a deterministic, collision-resistant DNS-1123 pod name from
+   the canonical authenticated user (`authenticatedUsername`) **plus** the resolved pod template,
+   and returns it with `createMissingPods: true` (merged over the base config);
+2. it labels every box `dev.box/owner` = the authenticated user (audit + cap counting);
+3. it enforces the per-user box cap (`configServer.maxPodsPerUser`, default 3): the first
+   connection creates the box, reconnects exec into the same pod, opening additional boxes happens
+   by using usernames that resolve to *different* templates, and spawning a new box while at the
+   cap is denied server-side (reconnecting to an existing box always passes).
 
-This target is **not fully implemented in the chart yet**. The values path still defaults to
-`connection`, force-renders `metadata.generateName`, does not expose `createMissingPods`, and the
-bundled config server does not yet inject a per-user `metadata.name`. Do not set
-`kubernetes.mode=persistent` by itself: without the stable name and creation setting, connections
-cannot get an on-demand persistent pod.
+Because the box identity comes from the *authenticated* username, two users who both type
+`ssh ubuntu@…` never share a pod, and unknown usernames collapse onto one shared `default` box per
+owner instead of minting unbounded pods. The cap and naming logic live in the config webhook, so
+clients cannot bypass them.
 
-Persistent mode preserves the **pod lifecycle**, not data independently of the pod. A pod's writable
-layer is still lost if the pod is deleted, evicted, or recreated; mount a PVC or another durable
-store for data that must survive those events. Changes to a pod template also do not update an
-already-created persistent pod; recreate or migrate that pod explicitly to apply image/spec changes.
+**Requirements / caveats:**
+
+- Persistent mode needs a config server to inject the deterministic per-user pod name (and
+  request-scoped `createMissingPods: true` for mixed-mode templates) — enable the bundled
+  `configServer` or run this repository's config server behind an external `configserver.url` with
+  its persistent-mode environment configured. The chart **fails rendering** if
+  `kubernetes.mode: persistent` is set without one. Use `kubernetes.mode: connection` for classic
+  per-connection behavior without a config server.
+- Persistent mode preserves the **pod lifecycle**, not data independently of the pod. A pod's
+  writable layer is still lost if the pod is deleted, evicted, or recreated; mount a PVC or another
+  durable store for data that must survive those events.
+- Pods are **never deleted automatically**, by the chart or the config server. Bin the cap, then
+  delete an operator-identified box explicitly (`kubectl delete pod <name> -n
+  $SESSION_NAMESPACE`, owner label `dev.box/owner=<user>`).
+- Changes to a pod template do not update an already-created persistent pod; because the pod name
+  is deterministic, operators can recreate/migrate the named pod deliberately to apply changes.
 
 ## Install
 
+The chart default is **persistent mode**, which needs a config server (bundled or external) to
+inject stable per-user pod names — see [Persistent mode](#persistent-mode-devbox-target---the-chart-default).
+The minimal examples below pin `kubernetes.mode=connection` so they need only an auth server; add
+`--set configServer.enabled=true` (and a built config-server image) for the persistent default.
+
 ```bash
 helm install containerssh . \
+  --set kubernetes.mode=connection \
   --set auth.password.webhook.url=https://auth.example.com/ \
   --namespace containerssh \
   --create-namespace
@@ -102,6 +128,7 @@ openssl genrsa | kubectl create secret generic containerssh-hostkey \
   --from-file=host.key=/dev/stdin -n containerssh
 
 helm install containerssh . \
+  --set kubernetes.mode=connection \
   --set ssh.hostKey.existingSecret=containerssh-hostkey \
   --namespace containerssh
 ```
@@ -109,7 +136,7 @@ helm install containerssh . \
 ```bash
 # (b) Or pass a key directly to the chart at install time:
 openssl genrsa -out host.key 4096
-helm install containerssh . --set-file ssh.hostKey.privateKey=host.key -n containerssh
+helm install containerssh . --set kubernetes.mode=connection --set-file ssh.hostKey.privateKey=host.key -n containerssh
 ```
 
 ### Connect
@@ -131,11 +158,13 @@ key, which this chart auto-generates — see `ssh.hostKey`), so there is no TLS/
 set up for SSH at all.
 
 The way to front SSH with an ingress is a **raw-TCP route**. With Traefik (this
-cluster's default controller) that's an `IngressRouteTCP`. Enable it with:
+cluster's default controller) that's an `IngressRouteTCP`. Enable it with (a persistent-mode
+example: auth server + bundled config server):
 
 ```bash
 helm install containerssh . \
   --set auth.password.webhook.url=<your auth server> \
+  --set configServer.enabled=true \
   --set ingress.enabled=true \
   --namespace containerssh
 ```
@@ -168,7 +197,7 @@ See `values.yaml` for the complete, annotated list. Highlights:
 | `ssh.hostKey.privateKey` | `""` | Inline PEM host key (chart creates the Secret from it) |
 | `kubernetes.sessionNamespace` | `containerssh-sessions` | Namespace where backend user pods run |
 | `kubernetes.createSessionNamespace` | `true` | Create that namespace if it doesn't exist |
-| `kubernetes.mode` | `connection` | Chart default; dev.box target is `persistent` after the support gaps above are implemented |
+| `kubernetes.mode` | `persistent` | `connection`, `session`, or `persistent` (dev.box default). `persistent` needs a config server (bundled or external) — the chart fails otherwise |
 | `kubernetes.pod.metadata` | `{}` | Pod metadata extended and merged with defaults |
 | `kubernetes.pod.spec` | backend user-container defaults | Full pod spec (image, volumes, resources, nodeName, securityContext…) |
 | `auth.*.webhook.url` | `""` | External auth webhooks; password or publicKey is required unless the bundled auth server is enabled. **v0.6 gotcha:** the YAML key is `publicKey` — `auth.pubkey` is a deprecated boolean flag and the real binary rejects a map there (`cannot unmarshal !!map into bool`) |
@@ -185,6 +214,7 @@ See `values.yaml` for the complete, annotated list. Highlights:
 | `networkPolicy.extraEgress` | `[]` | Extra egress peers for backend user pods |
 | `configserver.url` | `""` | Config server URL (auto-set when bundled server is enabled) |
 | `configServer.enabled` | `false` | Deploy the bundled config server in-chart |
+| `configServer.maxPodsPerUser` | `3` | Per-owner live-box cap in persistent mode (0 = disabled); always allows reconnects |
 | `kubernetes.podTemplates` | `[]` | Pod templates selected by SSH username (template `name` = username) |
 | `authServer.authentik.url` | `""` | authentik base URL (required when `authServer.enabled`) |
 | `authServer.authentik.token` | `""` | authentik service token (chart creates a Secret) |
@@ -249,9 +279,11 @@ helm install containerssh . \
   from the base pod but fails at startup because the binary is absent.
 - **Fail-closed**: while `configserver.url` is set (auto when the bundled server is enabled),
   ContainerSSH *denies* connections when the config request errors — the server must be up.
-- **One config per connection**: a connection always uses the single config it fetched. In
-  connection mode this normally creates a pod for that connection; in the planned persistent mode,
-  multiple connections for one authenticated user resolve to and exec in the same named pod.
+- **Persistent boxes (default)**: in persistent mode each authenticated user keeps ONE stable box
+  per template, capped at `configServer.maxPodsPerUser` (default 3) — same username + same
+  template always resolves to the same pod; more templates = more boxes up to the cap; spawning at
+  the cap is denied while reconnecting always works. Delete a box explicitly when it is no longer
+  needed (see the persistent-mode section above).
 - **Image required**: build and push `dev.box/config-server` and point `configServer.image` at it
   (no public image exists yet).
 
@@ -291,6 +323,7 @@ key's authentik owner:
 helm install containerssh . \
   --set authServer.enabled=true \
   --set authServer.authentik.url=https://authentik.example.com \
+  --set configServer.enabled=true \
   --set-file authServer.authentik.token=service-token
 ```
 

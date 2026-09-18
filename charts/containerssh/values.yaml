@@ -83,11 +83,17 @@ kubernetes:
   # Create the session namespace if it does not exist yet.
   createSessionNamespace: true
 
-  # Execution mode: "connection" (chart default), "session" or "persistent".
-  # dev.box intends to use "persistent", but the standard values path does not
-  # yet render the required stable metadata.name or createMissingPods=true.
-  # Do not switch this value alone; see README "Persistent mode (dev.box target)".
-  mode: connection
+  # Execution mode: "connection", "session" or "persistent".
+  # The dev.box target (and chart default) is "persistent": each authenticated
+  # user gets ONE stable pod per pod template, created on demand and reused
+  # across reconnects. Persistent mode stops force-rendering generateName and
+  # normally renders createMissingPods: true. The config server also injects
+  # createMissingPods with the deterministic DNS-1123 metadata.name and
+  # dev.box/owner label per persistent request. If a chart-managed template
+  # selects connection/session mode, base createMissingPods is omitted so that
+  # override remains valid. Persistent mode requires this config server (bundled
+  # configServer or externally operated at configserver.url), or rendering fails.
+  mode: persistent
 
   connection:
     # In-cluster API endpoint (resolves only inside the cluster). For out-of-cluster
@@ -109,8 +115,10 @@ kubernetes:
     # burst: 10
 
   pod:
-    # Additional pod metadata (labels, annotations, ...). `metadata.namespace` and
-    # `metadata.generateName` are managed by the chart (namespace = sessionNamespace).
+    # Additional pod metadata (labels, annotations, ...). `metadata.namespace`
+    # is managed by the chart (namespace = sessionNamespace). In persistent
+    # mode `metadata.name` is injected at runtime by the config server (a fixed
+    # name here would give every user the same pod — don't set one).
     metadata:
       # labels:
       #   team: ssh
@@ -232,6 +240,13 @@ configserver:
 # kubernetes.podTemplates (served per username: ssh <user> -> <user>.yaml template).
 # Image must be built & pushed first (see the config-server README), then
 # referenced here.
+#
+# In persistent mode (kubernetes.mode=persistent, the default) this server also
+# gives each authenticated user ONE stable box per template: it injects a
+# deterministic DNS-1123 pod name (kubernetes.pod.metadata.name) and the
+# dev.box/owner label derived from the authenticated identity, and enforces the
+# per-user box cap. It runs with its own ServiceAccount holding list-only
+# permission on pods in kubernetes.sessionNamespace.
 configServer:
   enabled: false
   # Must point at a built/pushed image — there is no public config-server image.
@@ -244,6 +259,12 @@ configServer:
     pullPolicy: IfNotPresent
   # syslog-style: 7 debug (per-request lookups) ... 4 warning, 3 error, 2 crit
   logLevel: 6
+  # Persistent-mode box cap shared by every owner: the maximum number of live
+  # boxes (pods) one authenticated user can keep across all templates (default 3).
+  # Reconnecting to an existing box always passes; spawning a new box at the cap
+  # is denied server-side (fail closed). List-failures are denied too. 0 disables
+  # the cap. Only enforced in persistent mode (CONTAINERSSH_MAX_PODS_PER_USER).
+  maxPodsPerUser: 3
   resources:
     limits:
       cpu: 100m

@@ -84,18 +84,24 @@ expect_render_failure "authorization without authentication" \
   --set auth.authz.webhook.url=https://authz.example.test
 
 assert_config "external password only" password \
+  --set kubernetes.mode=connection \
   --set auth.password.webhook.url=https://password.example.test
 assert_config "external public key only" publicKey \
+  --set kubernetes.mode=connection \
   --set auth.publicKey.webhook.url=https://pubkey.example.test
 assert_config "external public key plus authorization" publicKey-authz \
+  --set kubernetes.mode=connection \
   --set auth.publicKey.webhook.url=https://pubkey.example.test \
   --set auth.authz.webhook.url=https://authz.example.test
+# Bundled auth + config servers stay on the default PERSISTENT mode to prove
+# the chart renders persistent + a config server (the dev.box target).
 assert_config "bundled auth and config servers" bundled \
   --set authServer.enabled=true \
   --set authServer.authentik.url=https://authentik.example.test \
   --set authServer.authentik.tokenSecret=authentik-read-token \
   --set configServer.enabled=true
 assert_config "explicit method overrides bundled URL" mixed \
+  --set kubernetes.mode=connection \
   --set authServer.enabled=true \
   --set authServer.authentik.url=https://authentik.example.test \
   --set authServer.authentik.tokenSecret=authentik-read-token \
@@ -105,5 +111,5 @@ helm template "$release" "$chart" --namespace "$namespace" \
   --set existingConfigMap=external-containerssh-config >/dev/null
 printf 'OK   externally managed config bypasses chart auth validation\n'
 
-helm lint "$chart" --set auth.publicKey.webhook.url=https://pubkey.example.test >/dev/null
+helm lint "$chart" --set kubernetes.mode=connection --set auth.publicKey.webhook.url=https://pubkey.example.test >/dev/null
 printf 'OK   chart lint with valid authentication\n'

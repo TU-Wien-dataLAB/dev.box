@@ -1,4 +1,10 @@
 {{- if not .Values.existingConfigMap }}
+{{- $hasNonPersistentPodTemplate := false }}
+{{- range $template := .Values.kubernetes.podTemplates }}
+{{- if and $template.mode (ne $template.mode "persistent") }}
+{{- $hasNonPersistentPodTemplate = true }}
+{{- end }}
+{{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -48,9 +54,14 @@ data:
     {{- end }}
       pod:
         mode: {{ .Values.kubernetes.mode | quote }}
+{{- if and (eq .Values.kubernetes.mode "persistent") (not $hasNonPersistentPodTemplate) }}
+        createMissingPods: true
+{{- end }}
         metadata:
           namespace: {{ .Values.kubernetes.sessionNamespace | quote }}
+{{- if ne .Values.kubernetes.mode "persistent" }}
           generateName: containerssh-
+{{- end }}
         {{- with .Values.kubernetes.pod.metadata }}
 {{ toYaml . | indent 10 }}
         {{- end }}
@@ -94,6 +105,9 @@ data:
     {{- $authzURL := default $authURL .Values.auth.authz.webhook.url }}
     {{- if not (or $passwordURL $publicKeyURL) }}
     {{- fail "configure at least one authentication method: enable authServer or set auth.password.webhook.url or auth.publicKey.webhook.url" }}
+    {{- end }}
+    {{- if and (eq .Values.kubernetes.mode "persistent") (not .Values.configServer.enabled) (not .Values.configserver.url) }}
+    {{- fail "persistent kubernetes mode needs a config server to inject stable per-user pod names: enable configServer or set configserver.url (or use kubernetes.mode=connection)" }}
     {{- end }}
     auth:
     {{- if $passwordURL }}
