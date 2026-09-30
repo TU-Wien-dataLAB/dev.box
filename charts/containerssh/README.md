@@ -25,6 +25,7 @@ This chart is modeled on the official documentation:
 | `Deployment` + `Service` + `ServiceAccount` + `Role`/`RoleBinding` *(optional)* | Bundled config server (`configServer.enabled`) — its own ServiceAccount holds **list-only** permission on pods in the session namespace, just enough for the persistent-mode box cap |
 | `Service` | Exposes the SSH port (ClusterIP by default) |
 | `test-connection` Job | `helm test` smoke check that the SSH port is reachable |
+| Kata installer `DaemonSet`, RBAC, and `RuntimeClass` *(optional, enabled by default)* | Official `kata-deploy` dependency; installs Kata on nodes and isolates backend user pods in VMs (`kata.enabled`) |
 
 The Kubernetes backend configuration follows the reference:
 
@@ -40,6 +41,7 @@ kubernetes:
       namespace: <session-namespace>
       generateName: containerssh-
     spec:
+      runtimeClassName: kata-qemu-runtime-rs
       containers:
         - name: shell
           image: containerssh/containerssh-guest-image
@@ -113,12 +115,72 @@ The minimal examples below pin `kubernetes.mode=connection` so they need only an
 `--set configServer.enabled=true` (and a built config-server image) for the persistent default.
 
 ```bash
+helm dependency build .
 helm install containerssh . \
   --set kubernetes.mode=connection \
   --set auth.password.webhook.url=https://auth.example.com/ \
   --namespace containerssh \
   --create-namespace
 ```
+
+### Run backend pods in Kata Containers
+
+The chart pins the official [`kata-deploy` OCI chart](https://kata-containers.github.io/kata-containers/installation/#install-on-kubernetes-with-helm-recommended)
+to **4.2.0**, enabled by default as the `kata` dependency. The base/sample backend pod uses
+`runtimeClassName: kata-qemu-runtime-rs`; metadata-only username templates inherit it. The SSH
+server and both webhook servers keep the cluster's normal runtime.
+
+Before installing:
+
+1. Check eligible nodes have virtualization enabled, `/dev/kvm`, and the required host modules
+   (nested virtualization if the nodes are VMs). See [Kata prerequisites](https://kata-containers.github.io/kata-containers/installation/#prerequisites).
+2. Use cluster-admin permissions and a release namespace that permits privileged installer pods
+   and host mounts. Kata modifies node runtime configuration and can restart containerd/CRI-O;
+   schedule installation/upgrades accordingly. Do not enable it alongside another installation
+   managing the same RuntimeClasses.
+3. Set upstream installer values under `kata` as needed, for example `kata.k8sDistribution=k3s`
+   or `kata.nodeSelector`. Only QEMU runtime-rs is enabled; no optional snapshotter is installed.
+4. Run `helm dependency build .` before rendering, testing, packaging, or installing this local
+   chart. After installation, wait for `kubectl rollout status daemonset/kata -n containerssh`
+   and confirm `kubectl get runtimeclass kata-qemu-runtime-rs` before connecting.
+
+To omit Kata entirely, add `--set kata.enabled=false` to your Helm command. This omits the
+installer, its RuntimeClass/RBAC/hooks, and the automatic backend `runtimeClassName`.
+To use an **externally managed** runtime, also set
+`--set kubernetes.pod.spec.runtimeClassName=<existing-class>`. An explicit pod-spec value takes
+precedence even with the bundled installer enabled; if selecting a different Kata shim, enable
+that shim under `kata.shims` as well.
+
+`existingConfigMap` bypasses generated backend configuration: set `runtimeClassName` in that
+external config yourself, or disable the installer if it is not needed. A named pod-template
+`spec.runtimeClassName` can override the base class; templates cannot clear an inherited class
+with an empty value because ContainerSSH skips empty fields during merge.
+
+For an existing persistent deployment, migrate/save data and deliberately recreate backend pods
+before expecting the new runtime to take effect. Changing configuration does not mutate their
+RuntimeClass. Stop Kata workloads before disabling/removing the installer: terminating the
+DaemonSet can remove the node runtime. Upstream RBAC marked `helm.sh/resource-policy: keep` may
+remain after disabling the dependency on upgrade; see [Kata cleanup guidance](https://github.com/kata-containers/kata-containers/blob/4.2.0/docs/helm-configuration.md#deployment-modes-daemonset-vs-job).
+
+#### Add Kata to an existing Helm release
+
+If the first upgrade adding Kata reports `cannot verify the previous kata-deploy identity`,
+confirm there is **no prior Kata installation** associated with the release or nodes. Only for
+that initial adoption, seed the upstream installation-state ConfigMap before retrying the
+upgrade. For release/namespace `containerssh`, default empty suffix and DaemonSet mode:
+
+```bash
+kubectl --context container-ssh -n containerssh create configmap containerssh-kata-deploy-state \
+  --from-literal=multiInstallSuffix= --from-literal=deploymentMode=daemonset
+kubectl --context container-ssh -n containerssh label configmap containerssh-kata-deploy-state \
+  app.kubernetes.io/managed-by=Helm
+kubectl --context container-ssh -n containerssh annotate configmap containerssh-kata-deploy-state \
+  meta.helm.sh/release-name=containerssh meta.helm.sh/release-namespace=containerssh
+```
+
+Do not overwrite an existing state object or use this to change an existing Kata installation's
+suffix/mode: the upstream guard prevents orphaning node installations. Preserve the current
+release's user values when upgrading, so authentication, host-key Secrets, and image pins survive.
 
 ### SSH host keys
 
@@ -203,6 +265,9 @@ See `values.yaml` for the complete, annotated list. Highlights:
 | `kubernetes.mode` | `persistent` | `connection`, `session`, or `persistent` (dev.box default). `persistent` needs a config server (bundled or external) — the chart fails otherwise |
 | `kubernetes.pod.metadata` | `{}` | Pod metadata extended and merged with defaults |
 | `kubernetes.pod.spec` | backend user-container defaults | Full pod spec (image, volumes, resources, nodeName, securityContext…) |
+| `kata.enabled` | `true` | Install the official Kata dependency and automatically select `kata-qemu-runtime-rs` for backend pods |
+| `kata.*` | QEMU runtime-rs only, DaemonSet mode | Upstream `kata-deploy` values (distribution, node selection, shims, etc.) |
+| `kubernetes.pod.spec.runtimeClassName` | auto when Kata is enabled, otherwise absent | Explicit override, including for externally managed runtimes |
 | `auth.*.webhook.url` | `""` | External auth webhooks; password or publicKey is required unless the bundled auth server is enabled. **v0.6 gotcha:** the YAML key is `publicKey` — `auth.pubkey` is a deprecated boolean flag and the real binary rejects a map there (`cannot unmarshal !!map into bool`) |
 | `auth.*.webhook.timeout` | `30s` | Per-request timeout, kept below the 60s overall authentication timeout |
 | `authServer.enabled` | `false` | Deploy the bundled authentik-backed auth server and wire it |
@@ -241,7 +306,8 @@ Net effect: each user gets their own pod flavor by simply connecting as that use
 `default` template acts as the catch-all for everyone else; empty list → the base `kubernetes.pod`
 applies to everyone.
 
-Example `values.yaml`:
+Example `values.yaml` (the base pod and these metadata-only templates automatically use
+`kata-qemu-runtime-rs` while `kata.enabled=true`):
 
 ```yaml
 kubernetes:

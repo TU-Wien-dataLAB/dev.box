@@ -76,10 +76,10 @@ cat > /tmp/pods/ubuntu.yaml <<'YAML'
 kubernetes:
   pod:
     spec:
+      runtimeClassName: kata-qemu-runtime-rs
       containers:
         - name: shell
-          image: ubuntu:22.04
-          command: ["/bin/bash"]
+          image: containerssh/containerssh-guest-image
 YAML
 
 CONTAINERSSH_CONFIG_DIR=/tmp/pods \
@@ -91,6 +91,10 @@ curl -s -X POST http://127.0.0.1:8080/ \
   -H 'Content-Type: application/json' \
   -d '{"username":"ubuntu","connectionId":"c1","remoteAddress":"10.0.0.1:43210"}'
 ```
+
+The sample template requests the RuntimeClass installed by the chart's optional Kata dependency.
+For a cluster without Kata, remove `runtimeClassName`. When using chart-managed metadata-only
+templates, the RuntimeClass and guest image are inherited from the chart's base pod instead.
 
 ## Environment
 

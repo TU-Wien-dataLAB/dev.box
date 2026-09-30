@@ -74,3 +74,14 @@ secures the transport itself).
 
 4. Sanity check the deployment:
     kubectl --namespace {{ .Release.Namespace }} logs deployment/{{ include "containerssh.fullname" . }}
+
+{{- if .Values.kata.enabled }}
+5. Kata Containers is enabled for backend user pods (not the SSH/webhook servers).
+   Wait for the installer before connecting (default DaemonSet mode):
+    kubectl --namespace {{ .Release.Namespace }} rollout status daemonset/kata
+    kubectl get runtimeclass kata-qemu-runtime-rs
+   Eligible nodes need virtualization/KVM. Installer changes can restart the host CRI runtime.
+   Default backend RuntimeClass: kata-qemu-runtime-rs (overridable via pod.spec.runtimeClassName).
+   Existing persistent pods keep their old runtime until deliberately recreated/migrated.
+   Disable installer and automatic RuntimeClass with --set kata.enabled=false.
+{{- end }}

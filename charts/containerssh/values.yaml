@@ -76,6 +76,26 @@ networkPolicy:
   #     ports:
   #       - port: 8080
 
+# Official Kata Containers installer (Helm dependency, aliased as kata).
+# Requires virtualization/KVM on eligible nodes and cluster-admin permissions.
+# Only backend user pods use Kata; the SSH/auth/config servers use the normal runtime.
+# Disable both installation and the automatic backend RuntimeClass with enabled=false.
+# All upstream kata-deploy values can be overridden under this key.
+kata:
+  enabled: true
+  deploymentMode: daemonset
+  # This subchart runs in the ContainerSSH release namespace, not kube-system.
+  # Do not use the upstream system-node-critical priority outside kube-system.
+  priorityClassName: ""
+  # Install just the non-confidential QEMU Rust runtime used by the base pod.
+  shims:
+    disableAll: true
+    qemu-runtime-rs:
+      enabled: true
+  # No optional snapshotter installation is needed for the default guest image.
+  snapshotter:
+    setup: []
+
 kubernetes:
   # Namespace in which backend user pods run. ContainerSSH runs in the chart's
   # release namespace; ephemeral or persistent user pods run here (recommended isolation).
@@ -128,6 +148,10 @@ kubernetes:
     # ("Preventing root escalation/memory/CPU exhaustion"). Override freely; the
     # structure matches pod.spec (see `kubectl explain pod.spec`).
     spec:
+      # With kata.enabled=true, the chart adds runtimeClassName: kata-qemu-runtime-rs
+      # if absent. Templates inherit it. An explicit value overrides this default,
+      # even when Kata installation is disabled (externally managed runtime).
+      # runtimeClassName: kata-qemu-runtime-rs
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -162,16 +186,15 @@ kubernetes:
   # is inherited from `pod` above / the base config.
   podTemplates:
     # - name: ubuntu
-    #   spec:
-    #     containers:
-    #       - name: shell
-    #         image: ubuntu:22.04
-    #         command: ["/bin/bash"]
+    #   metadata:
+    #     labels:
+    #       dev-box-template: ubuntu
     # - name: default
-    #   spec:
-    #     containers:
-    #       - name: shell
-    #         image: containerssh/containerssh-guest-image
+    #   metadata:
+    #     labels:
+    #       dev-box-template: default
+    # Metadata-only templates inherit the guest image (with containerssh-agent)
+    # and the base runtimeClassName.
 
 ssh:
   # SSH listener port inside the container/pod

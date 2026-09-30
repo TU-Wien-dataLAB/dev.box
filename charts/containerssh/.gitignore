@@ -1,0 +1,2 @@
+# Downloaded Helm dependencies; reproduce with helm dependency build.
+/charts/

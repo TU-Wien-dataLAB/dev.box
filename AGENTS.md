@@ -10,7 +10,7 @@ backend**. The deployment target is ContainerSSH's **persistent** execution mode
 connection creates a stable per-user pod, later connections exec into that same pod, and
 disconnecting does not delete it. It consists of:
 
-1. **`charts/containerssh/`** — a Helm chart (v2, `containerssh-0.1.9`, `appVersion: 0.6`) that
+1. **`charts/containerssh/`** — a Helm chart (v2, `containerssh-0.3.0`, `appVersion: 0.6`) with an optional official Kata Containers dependency that
    deploys ContainerSSH itself plus optional extras.
 2. **`config-server/`** — a small Go server implementing the ContainerSSH config webhook protocol
    (built on `go.containerssh.io/containerssh` `config/webhook`), serving **pod templates selected
@@ -26,8 +26,8 @@ Reference docs (both official, version 0.6):
 Source of truth for ContainerSSH internals: `/Users/matthiasmatt/Documents/Work/oss/ContainerSSH`
 (this repo is checked out next to dev.box and is frequently used to verify behavior).
 
-> Repo: `git@github.com:TU-Wien-dataLAB/dev.box.git`. No successful deployment exists yet — see
-> [Deployment status](#deployment-status).
+> Repo: `git@github.com:TU-Wien-dataLAB/dev.box.git`. See
+> [Deployment status](#deployment-status) for the live release and verified behavior.
 
 ## Layout
 
@@ -35,7 +35,7 @@ Source of truth for ContainerSSH internals: `/Users/matthiasmatt/Documents/Work/
 dev.box/
 ├── AGENTS.md                  ← this file
 ├── charts/containerssh/       ← the Helm chart
-│   ├── Chart.yaml             (name containerssh, v0.1.9, appVersion 0.6)
+│   ├── Chart.yaml             (name containerssh, v0.3.0, appVersion 0.6)
 │   ├── values.yaml            (everything is configurable from here)
 │   ├── README.md
 │   └── templates/
@@ -125,6 +125,7 @@ ssh ubuntu@dev.box.example.com
 | `authServer.authentik.url` / `.token` | `""` | authentik base URL + read-only service token (or `tokenSecret` existing Secret) — **required** when enabled |
 | `authServer.authentik.keyAttribute` | `""` | user attribute the presented key is looked up by (default `sshPublicKey`) |
 | `authServer.requireGroup` | `""` | optional authentik group required after authentication (authz gate) |
+| `kata.enabled` | `true` | official Kata 4.2.0 subchart; installs QEMU runtime-rs and automatically selects `kata-qemu-runtime-rs` for backend pods only. Disable to omit installer and automatic RuntimeClass; explicit `kubernetes.pod.spec.runtimeClassName` overrides still work |
 | `kubernetes.sessionNamespace` | `containerssh-sessions` | where user pods run (chart force-manages) |
 | `kubernetes.mode` | `persistent` | chart **default**; `connection`/`session` also supported. Persistent normally renders `createMissingPods: true`, never force-renders `generateName`, and requires a bundled/external config server. With mixed-mode chart templates, base `createMissingPods` is omitted and injected only into persistent responses |
 | `kubernetes.pod` | security hard defaults | base/fallback pod config |
@@ -228,6 +229,7 @@ ssh ubuntu@dev.box.example.com
 
 ```bash
 # chart
+helm dependency build charts/containerssh                           # pinned optional Kata dependency
 helm lint charts/containerssh --set kubernetes.mode=connection \
   --set auth.publicKey.webhook.url=https://auth.example.test
 helm template smoke charts/containerssh -n containerssh \
@@ -235,6 +237,7 @@ helm template smoke charts/containerssh -n containerssh \
   --set auth.publicKey.webhook.url=https://auth.example.test            # render
 tests/chart-auth-rendering.sh                                        # auth render matrix
 tests/chart-service-selector.sh                                      # SSH Service isolation
+tests/chart-kata-rendering.sh                                         # Kata installer toggle + backend RuntimeClass
 tests/chart-persistent-rendering.sh                                  # persistent-mode render matrix (mode, cap, RBAC)
 tests/chart-config-binary-validation.sh                              # rendered configs through real v0.6 binary (Docker)
 helm package charts/containerssh -d /tmp/sshtest
@@ -257,12 +260,28 @@ representative persistent and non-persistent webhook merges to the real
 ## Deployment status
 
 - Target cluster context: **`container-ssh`** (created; control plane reachable).
-  Current default context is `ai-platform` — pass `--kube-context container-ssh` explicitly
+  Current default context is `container-ssh` — still pass `--kube-context container-ssh` explicitly
   (helm) / `--context container-ssh` (kubectl).
-- Helm release `containerssh` revision 16 is **deployed** in namespace `containerssh` with chart
-  `0.2.1` in persistent mode; ContainerSSH, auth-server, and config-server are all Ready. Ingress
-  remains disabled (ClusterIP + local port-forward). Chart 0.2.1 adds the generated-config checksum
-  that automatically restarted ContainerSSH for this rollout.
+- Helm release `containerssh` revision 17 is **deployed** in namespace `containerssh` with chart
+  `0.3.0` in persistent mode (upgraded 2026-09-30); ContainerSSH, auth-server, and config-server are
+  all Ready. Ingress remains disabled (ClusterIP + local port-forward). Existing user values,
+  immutable webhook image tags, and Secret references were preserved.
+- Kata 4.2.0 is installed by the chart's `kata` DaemonSet, Ready on both workers (not the tainted
+  control-plane nodes). `kata-qemu-runtime-rs` exists, and both workers advertise
+  `katacontainers.io/kata-runtime=true`. The generated base config selects it for new user pods.
+  When first adding this dependency to an existing release, upstream's upgrade guard requires
+  seeding `containerssh-kata-deploy-state` with `multiInstallSuffix: ""` and
+  `deploymentMode: daemonset`, plus Helm ownership metadata, after confirming there is no prior
+  Kata installation; see the chart README.
+- An end-to-end Kata creation/reconnect check passed on 2026-09-30 using SSH username `kata-smoke`
+  (resolves to the default template). Both connections ran under guest kernel `6.18.35` and reused
+  Running pod `box-3950ba8a52` with the same UID and `runtimeClassName: kata-qemu-runtime-rs`.
+  Only this newly created test box was explicitly deleted afterwards, with a UID precondition.
+  The original non-Kata `ubuntu` box (`box-8bbfc143fa`) was explicitly deleted at the owner's
+  request on 2026-09-30, with a UID precondition. The session namespace was empty afterwards.
+  The owner's next `ssh ubuntu@…` recreated `box-8bbfc143fa` on 2026-09-30 using
+  `kata-qemu-runtime-rs` (UID `b2abba32-495f-4212-a16c-b2490144789c`). The new box is Running/Ready
+  on worker `container-ssh-worker-k4v2m-mfq8d`; exec verified Kata guest kernel `6.18.35`.
 - Both bundled servers are pinned to immutable tag `sha-dfa829e`. The authentik read token and
   stable host key are mounted from existing Secrets (`containerssh-authentik-token`,
   `containerssh-host-key`).

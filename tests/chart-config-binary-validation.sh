@@ -71,7 +71,14 @@ validate_config() {
     cat "$stderr" >&2
     exit 1
   fi
-  printf 'OK   real ContainerSSH binary accepts %s config\n' "$label"
+  ruby -ryaml -e '
+    input = YAML.load_file(ARGV.fetch(0))
+    dump = YAML.load_file(ARGV.fetch(1))
+    expected = input.dig("kubernetes", "pod", "spec", "runtimeClassName")
+    actual = dump.dig("kubernetes", "pod", "spec", "runtimeClassName")
+    abort "ContainerSSH lost runtimeClassName: #{expected.inspect} -> #{actual.inspect}" unless expected == actual
+  ' "$config" "$tmp/dump-${label}.json"
+  printf 'OK   real ContainerSSH binary accepts %s config and preserves RuntimeClass\n' "$label"
 }
 
 render_config connection >"$tmp/config-connection.yaml"
@@ -83,6 +90,8 @@ render_config persistent \
   >"$tmp/config-persistent-mixed-base.yaml"
 validate_config connection "$tmp/config-connection.yaml"
 validate_config persistent-base "$tmp/config-persistent-base.yaml"
+render_config connection --set kata.enabled=false >"$tmp/config-connection-no-kata.yaml"
+validate_config connection-no-kata "$tmp/config-connection-no-kata.yaml"
 
 cat >"$tmp/override-persistent.yaml" <<'YAML'
 kubernetes:

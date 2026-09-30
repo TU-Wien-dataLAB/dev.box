@@ -1,4 +1,8 @@
 {{- if not .Values.existingConfigMap }}
+{{- $podSpec := deepCopy (default dict .Values.kubernetes.pod.spec) }}
+{{- if and .Values.kata.enabled (not (hasKey $podSpec "runtimeClassName")) }}
+{{- $_ := set $podSpec "runtimeClassName" "kata-qemu-runtime-rs" }}
+{{- end }}
 {{- $hasNonPersistentPodTemplate := false }}
 {{- range $template := .Values.kubernetes.podTemplates }}
 {{- if and $template.mode (ne $template.mode "persistent") }}
@@ -65,7 +69,7 @@ data:
         {{- with .Values.kubernetes.pod.metadata }}
 {{ toYaml . | indent 10 }}
         {{- end }}
-        {{- with .Values.kubernetes.pod.spec }}
+        {{- with $podSpec }}
         spec:
 {{ toYaml . | indent 10 }}
         {{- end }}
