@@ -58,7 +58,9 @@ against that exact list before applying the group gate. Unknown names return HTT
 `success: false`, producing an immediate SSH `Permission denied`. This avoids ContainerSSH v0.6's
 config-webhook behavior: non-200 responses are retried every ten seconds until timeout, then SSH
 closes without displaying the config error. The config-server still rejects unmatched names as a
-safety net. `default` is not a wildcard.
+safety net. `default` is not a wildcard. Plain SSH may try password authentication after a denied
+key, even though ContainerSSH never accepts it. For a prompt noninteractive error, use
+`ssh -o BatchMode=yes -o IdentitiesOnly=yes -i <key> -p 2222 <template>@localhost`.
 
 ## Environment
 

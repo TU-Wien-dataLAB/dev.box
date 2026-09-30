@@ -18,6 +18,7 @@ parser.add_argument("--host", default="localhost")
 parser.add_argument("--port", default=2222, type=int)
 parser.add_argument("--username", default="issue6-no-template")
 parser.add_argument("--known-template", default="ubuntu")
+parser.add_argument("--host-key-alias", help="trusted known_hosts name when using a different local port")
 parser.add_argument("--max-seconds", default=5, type=float)
 args = parser.parse_args()
 command = [
@@ -26,6 +27,8 @@ command = [
     "-o", "StrictHostKeyChecking=yes", "-o", "PreferredAuthentications=publickey",
     "-p", str(args.port),
 ]
+if args.host_key_alias:
+    command += ["-o", f"HostKeyAlias={args.host_key_alias}"]
 try:
     control = subprocess.run(command + [f"{args.known_template}@{args.host}", "true"],
                              capture_output=True, text=True, timeout=60)

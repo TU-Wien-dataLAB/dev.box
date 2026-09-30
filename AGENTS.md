@@ -275,10 +275,12 @@ representative persistent and non-persistent webhook merges to the real
 - Target cluster context: **`container-ssh`** (created; control plane reachable).
   Current default context is `container-ssh` — still pass `--kube-context container-ssh` explicitly
   (helm) / `--context container-ssh` (kubectl).
-- Helm release `containerssh` revision 18 is **deployed** in namespace `containerssh` with chart
-  `0.3.0` in persistent mode (upgraded 2026-09-30); ContainerSSH, auth-server, and config-server are
-  all Ready. Ingress remains disabled (ClusterIP + local port-forward). The revision 18 upgrade
-  changed only `configServer.image.tag`; all other user values and Secret references were preserved.
+- Helm release `containerssh` revision 19 is **deployed** in namespace `containerssh` with chart
+  `0.3.1` in persistent mode (upgraded 2026-09-30); ContainerSSH, auth-server, and config-server are
+  all Ready. Ingress remains disabled (ClusterIP + local port-forward). Revision 19 added the
+  auth-server template authorization gate (`AUTH_SERVER_ALLOWED_TEMPLATES=["ubuntu"]`) and changed
+  only `authServer.image.tag` in user values. Secret references, templates, and config-server tag
+  were preserved. The main SSH server restarted because chart metadata changed its config checksum.
 - Kata 4.2.0 is installed by the chart's `kata` DaemonSet, Ready on both workers (not the tainted
   control-plane nodes). `kata-qemu-runtime-rs` exists, and both workers advertise
   `katacontainers.io/kata-runtime=true`. The generated base config selects it for new user pods.
@@ -297,7 +299,9 @@ representative persistent and non-persistent webhook merges to the real
   on worker `container-ssh-worker-k4v2m-mfq8d`; exec verified Kata guest kernel `6.18.35`.
 - The config server is pinned to immutable tag `sha-270e2fd` (issue #6), image digest
   `sha256:04597f9f6a11c52662ef874d69eb990435ac790de5952e39be005bef28929b19`;
-  auth-server remains at `sha-dfa829e`. The authentik read token and stable host key are mounted
+  auth-server is pinned to `sha-72cadaa`, image digest
+  `sha256:6f1a71ff5c46cc3d88ae967baf9641b057127bddb664118da0fb1644f4fc6baa`.
+  The authentik read token and stable host key are mounted
   from existing Secrets (`containerssh-authentik-token`, `containerssh-host-key`).
 - Issue #6 was verified live on 2026-09-30: the config webhook returned HTTP 200 for `ubuntu`
   and HTTP 500 for an unmatched username, absent `default` template, and empty username. An
@@ -305,6 +309,15 @@ representative persistent and non-persistent webhook merges to the real
   with `CONFIG_SERVER_NO_TEMPLATES` logged. Two `ubuntu` SSH reconnects succeeded under Kata
   kernel `6.18.35` and retained pod `box-8bbfc143fa` UID
   `b2abba32-495f-4212-a16c-b2490144789c`. No user pods were created or deleted.
+- The revision 18 acceptance check missed prompt rejection: config HTTP 500 errors were retried
+  until timeout and SSH only reported connection closure. Revision 19 fixes this through an early
+  authz denial. Live checks returned HTTP 200 + `success: false` for unknown, absent `default`, and
+  empty template names. The SSH regression (`tests/ssh-template-rejection.py`, with a working
+  `ubuntu` positive control) rejected `unknown`, `issue6-fast-test`, and `default` in 0.21–0.23 s
+  with `Permission denied`; the unknown test never reached the config webhook. The same existing
+  Kata pod UID was preserved, and no user pods were created/deleted. Use `BatchMode=yes` and
+  `IdentitiesOnly=yes` for a noninteractive client error; plain SSH may offer password prompts after
+  a rejected key even though the server never accepts password authentication.
 - A real persistent-mode reconnect check passed on 2026-09-18: two sequential
   `ssh -i ~/.ssh/slurm_tu_wien -o IdentitiesOnly=yes -p 2222 ubuntu@localhost 'printf READY'`
   connections crossed ContainerSSH → auth-server → production authentik → config-server → guest
@@ -332,7 +345,7 @@ Remaining before the staged persistent-mode validation:
      explicit: no auto-deletion anywhere, documented in the chart README/NOTES. The real-cluster
      disconnect/reconnect stage passed on 2026-09-18.
   2. ✅ Both bundled images are pinned to immutable tags: config-server `sha-270e2fd`,
-     auth-server `sha-dfa829e`.
+     auth-server `sha-72cadaa`.
   3. Run the remaining cap-boundary, negative, policy, and fail-closed stages in
      `tests/cluster-deployment-spec.md`.
   4. Optional, later: `ingress.enabled=true` + the one-time Traefik TCP entrypoint/port setup
