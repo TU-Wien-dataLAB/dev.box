@@ -2,7 +2,7 @@
 Bundled pod-template configuration server (dev.box/config-server).
 Rendered only when configServer.enabled=true: a ConfigMap with the pod templates
 from values.kubernetes.podTemplates, plus a Deployment and a Service that serve
-the template matching the SSH username, then default.yaml. configserver.url is auto-wired to
+the template matching the SSH username exactly (no fallback). configserver.url is auto-wired to
 this Service in configmap.yaml.
 
 The server gets its OWN ServiceAccount with a Role limited to LISTING pods in the

@@ -51,8 +51,8 @@ secures the transport itself).
 2b. Bundled config server deployed at
     {{ include "containerssh.fullname" . }}-config-server.{{ .Release.Namespace }}:8080 and
     auto-wired to configserver.url. `ssh <user>@...` serves the pod template named
-    after `<user>` in kubernetes.podTemplates (a template named "default" is the
-    catch-all for other users).
+    after `<user>` in kubernetes.podTemplates. No matching template returns an error
+    and denies the connection; "default" is not a catch-all.
     If the pod is not Ready, the image may be missing — build/push it (see config-server README).
 {{- end }}
 

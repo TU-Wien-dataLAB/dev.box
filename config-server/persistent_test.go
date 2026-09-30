@@ -56,7 +56,7 @@ func testHandler(t *testing.T, opts ...func(*configHandler)) *configHandler {
 		t.Fatalf("logger: %v", err)
 	}
 	h := &configHandler{
-		dir:    testTemplateDir(t, nil),
+		dir:    testTemplateDir(t, map[string]string{"ubuntu.yaml": "{}"}),
 		logger: logger,
 		cache:  map[string]cachedEntry{},
 		boxes: persistentBoxConfig{
@@ -113,36 +113,6 @@ func TestDeterministicPodNaming(t *testing.T) {
 	}
 	if otherTemplate.Kubernetes.Pod.Metadata.Name == first.Kubernetes.Pod.Metadata.Name {
 		t.Fatalf("different templates of one owner got the same pod name %s", first.Kubernetes.Pod.Metadata.Name)
-	}
-}
-
-func TestDefaultTemplateFallbackCollapse(t *testing.T) {
-	// No default.yaml on purpose: both unknown logins resolve to the same
-	// "default" box for one owner, while a different owner gets its own default box.
-	h := testHandler(t)
-
-	one, err := h.OnConfig(configRequest("nobody-1", "alice"))
-	if err != nil {
-		t.Fatalf("nobody-1: %v", err)
-	}
-	if one.Kubernetes.Pod.Metadata.Name == "" {
-		t.Fatal("unknown username got no pod name")
-	}
-	two, err := h.OnConfig(configRequest("nobody-2", "alice"))
-	if err != nil {
-		t.Fatalf("nobody-2: %v", err)
-	}
-	if two.Kubernetes.Pod.Metadata.Name != one.Kubernetes.Pod.Metadata.Name {
-		t.Fatalf("unknown logins of one owner should collapse onto the same default box: %s vs %s",
-			one.Kubernetes.Pod.Metadata.Name, two.Kubernetes.Pod.Metadata.Name)
-	}
-
-	other, err := h.OnConfig(configRequest("nobody-1", "bob"))
-	if err != nil {
-		t.Fatalf("other owner as nobody-1: %v", err)
-	}
-	if other.Kubernetes.Pod.Metadata.Name == one.Kubernetes.Pod.Metadata.Name {
-		t.Fatalf("two owners must never share a default box: %s", one.Kubernetes.Pod.Metadata.Name)
 	}
 }
 

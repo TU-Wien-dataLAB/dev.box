@@ -83,8 +83,8 @@ The box identity is provided by the **config server** at connection time:
    cap is denied server-side (reconnecting to an existing box always passes).
 
 Because the box identity comes from the *authenticated* username, two users who both type
-`ssh ubuntu@…` never share a pod, and unknown usernames collapse onto one shared `default` box per
-owner instead of minting unbounded pods. The cap and naming logic live in the config webhook, so
+`ssh ubuntu@…` never share a pod, and usernames without an exact named template are denied
+instead of falling back to a default image. The cap and naming logic live in the config webhook, so
 clients cannot bypass them.
 
 **Requirements / caveats:**
@@ -246,7 +246,7 @@ kubectl -n traefik patch deploy traefik --type=json -p \
 
 Then `ssh -p 2222 ubuntu@<traefik-host>` drops you into the "ubuntu" pod template
 (the SSH login name selects the pod template: `ubuntu` → the `ubuntu` podTemplate;
-no matching template falls back to `default`/the base pod). Tune the entrypoint and
+no matching template returns an error when using the bundled config server). Tune the entrypoint and
 service port via `ingress.tcp.*` (see `values.yaml`).
 
 ## Configuration
@@ -299,12 +299,11 @@ the **bundled config server** (source in `dev.box/config-server`).
    mounted ConfigMap and auto-wires `configserver.url` to the in-chart Service.
 3. On every SSH connection, ContainerSSH asks the config server for a config, which is **merged
    over the base config**. The server looks up a template **by the SSH username**:
-   `ssh ubuntu@host` → template named `ubuntu`; no match → template named `default`; still none →
-   base config.
+   `ssh ubuntu@host` → template named `ubuntu`; no match → error (SSH connection denied).
 
-Net effect: each user gets their own pod flavor by simply connecting as that user name. A
-`default` template acts as the catch-all for everyone else; empty list → the base `kubernetes.pod`
-applies to everyone.
+Net effect: each user selects a pod flavor by connecting with its template name. There is no
+catch-all: `default` is an ordinary template usable only by `ssh default@host`. An empty list
+with the bundled config server enabled denies all connections.
 
 Example `values.yaml` (the base pod and these metadata-only templates automatically use
 `kata-qemu-runtime-rs` while `kata.enabled=true`):
@@ -312,7 +311,7 @@ Example `values.yaml` (the base pod and these metadata-only templates automatica
 ```yaml
 kubernetes:
   pod:
-    # default/fallback pod (mirrors the templates' structure)
+    # Base pod inherited by matching templates
     spec:
       containers:
         - name: shell
@@ -322,17 +321,18 @@ kubernetes:
       metadata:
         labels:
           dev-box-template: ubuntu
-    - name: default
+    - name: dev
       metadata:
         labels:
-          dev-box-template: default
+          dev-box-template: dev
 ```
 
 Templates are **partial** `kubernetes.pod` overrides — unset fields (mode, metadata, spec, limits,
 ...) are inherited from the base config thanks to ContainerSSH's deep merge (`structutils.Merge`;
 verified: overriding only labels preserves the base containers/spec). The server looks up the file
-`<username>.yaml` (sanitized), then `default.yaml`; selection is deterministic per user, so the
-server stays stateless and replica-safe (no coordination needed).
+`<username>.yaml`, then `<username>.json`, without rewriting the username. Empty or unsafe
+usernames and missing templates return errors. Selection is deterministic per user, so the server
+stays stateless and replica-safe (no coordination needed).
 
 Wire it up:
 

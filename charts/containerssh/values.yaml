@@ -179,9 +179,9 @@ kubernetes:
 
   # Pod templates selected by SSH username (when configServer.enabled=true).
   # `ssh <name>@host` uses the template named after that username:
-  # the config server serves <name>.yaml to that user. Name one template
-  # "default" to give unmatched users a catch-all; users with no matching
-  # template fall back to the base `pod` config. Each item is a partial
+  # the config server serves <name>.yaml to that user. Users with no exact
+  # matching template are denied; there is no catch-all or base-pod fallback.
+  # "default" is an ordinary name, used only by `ssh default@host`. Each item is a partial
   # kubernetes.pod override (mode/metadata/spec/...); everything you leave out
   # is inherited from `pod` above / the base config.
   podTemplates:
@@ -189,10 +189,10 @@ kubernetes:
     #   metadata:
     #     labels:
     #       dev-box-template: ubuntu
-    # - name: default
+    # - name: dev
     #   metadata:
     #     labels:
-    #       dev-box-template: default
+    #       dev-box-template: dev
     # Metadata-only templates inherit the guest image (with containerssh-agent)
     # and the base runtimeClassName.
 
@@ -369,7 +369,7 @@ service:
 #     '[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--entryPoints.ssh.address=:2222/tcp"}]'
 # Then `ssh -p 2222 ubuntu@<traefik-lb-ip|host>` drops you into the "ubuntu" pod template
 # (the SSH login name selects the pod template; any name works as long as a matching
-# podTemplate exists or a `default` one catches unmatched users).
+# podTemplate exists; unmatched names are denied by the bundled config server).
 ingress:
   enabled: false                 # render a Traefik IngressRouteTCP for SSH
   controller: traefik            # only Traefik (IngressRouteTCP) is supported

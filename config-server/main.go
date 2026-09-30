@@ -9,9 +9,9 @@
 // (e.g. "ssh ubuntu@dev.box.example.com"), the server resolves the template
 // that matches the username:
 //
-//	/config/<username>.yaml   pod template named after the username
-//	/config/default.yaml      catch-all for users without their own template
-//	(empty)                   otherwise ContainerSSH uses its base config
+//	/config/<username>.yaml   pod template named exactly after the username
+//	/config/<username>.json   alternative format for the same named template
+//	(error)                  no matching template: SSH connection denied
 //
 // Each template is a partial AppConfig:
 //
@@ -29,8 +29,8 @@
 //
 // The directory is typically fed by a mounted Kubernetes ConfigMap. Unset
 // fields are inherited from ContainerSSH's base config (the chart's generated
-// config.yaml). If no template matches, an empty config is returned so
-// ContainerSSH uses the base config unchanged.
+// config.yaml). If no template matches, an error is returned. There is no
+// catch-all or base-config fallback; "default" is only used by ssh default@host.
 //
 // # Persistent mode
 //

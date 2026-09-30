@@ -94,8 +94,9 @@ ssh ubuntu@dev.box.example.com
 ```
 
 - Per SSH **username** → a pod **template** with that name: `ssh ubuntu@…` → `ubuntu.yaml`.
-- Template lookup: `<username>.yaml` → `default.yaml` → (server empty → base pod). Unknown
-  usernames collapse onto one shared `default` box per owner.
+- Template lookup: `<username>.yaml` → `<username>.json` → error (connection denied).
+  No catch-all or base-pod fallback; `default` is an ordinary template name used only by
+  `ssh default@…`. Empty/unsafe usernames are rejected rather than rewritten.
 - The config-server response is **merged over the chart's base config** (see merge rule below).
 - The lifecycle is ONE stable, deterministic pod per (authenticated user, template): the config
   server injects `kubernetes.pod.metadata.name` = `box-` + first 10 hex of SHA-256 over
@@ -128,7 +129,7 @@ ssh ubuntu@dev.box.example.com
 | `kata.enabled` | `true` | official Kata 4.2.0 subchart; installs QEMU runtime-rs and automatically selects `kata-qemu-runtime-rs` for backend pods only. Disable to omit installer and automatic RuntimeClass; explicit `kubernetes.pod.spec.runtimeClassName` overrides still work |
 | `kubernetes.sessionNamespace` | `containerssh-sessions` | where user pods run (chart force-manages) |
 | `kubernetes.mode` | `persistent` | chart **default**; `connection`/`session` also supported. Persistent normally renders `createMissingPods: true`, never force-renders `generateName`, and requires a bundled/external config server. With mixed-mode chart templates, base `createMissingPods` is omitted and injected only into persistent responses |
-| `kubernetes.pod` | security hard defaults | base/fallback pod config |
+| `kubernetes.pod` | security hard defaults | base pod config inherited by matching templates |
 | `kubernetes.podTemplates` | `[]` | named pod templates (name = SSH username); needs `configServer.enabled` |
 | `configServer.enabled` | `false` | deploy the bundled config server + auto-wire `configserver.url` |
 | `configServer.maxPodsPerUser` | `3` | per-owner live-box cap in persistent mode (`0` = disabled); reconnects always pass; list-failure denies |
@@ -211,7 +212,9 @@ ssh ubuntu@dev.box.example.com
   a Helm upgrade can leave the old process running with stale mode/settings (observed during the
   first persistent rollout). An external `existingConfigMap` cannot be checksummed by Helm;
   restart the Deployment manually after changing that object.
-- **`default` is a reserved template name** — it's the catch-all in the config server.
+- **Named templates are required by the config server** — unmatched SSH usernames return an
+  error in every mode (issue #6). There is no `default` or base-config fallback. `default` is an
+  ordinary template name. This source change must be built/deployed before live behavior changes.
 - **User pods vs. ContainerSSH pod**: the chart ships security defaults for backend user pods
   (`runAsNonRoot`, `runAsUser: 1000`, `allowPrivilegeEscalation: false`, cpu/mem limits). The
   NetworkPolicy deliberately has **no pod-security `enforce` label** — a restricted PSS profile

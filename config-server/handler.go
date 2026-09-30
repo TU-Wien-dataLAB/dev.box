@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,10 +29,7 @@ const (
 	logCodePersistentInjected = "CONFIG_SERVER_PERSISTENT_INJECTED"
 )
 
-// defaultTemplateName is the catch-all template file (without extension) used
-// when the user has no template named after their username. It is also the
-// identity key for unmatched usernames in persistent mode (see handler docs).
-const defaultTemplateName = "default"
+var errNoMatchingTemplate = errors.New("no pod template matches SSH username")
 
 // cachedEntry remembers a parsed template together with the file stat it was
 // parsed from, so unchanged files are not re-read on every SSH connection.
@@ -42,7 +40,8 @@ type cachedEntry struct {
 }
 
 // configHandler implements config.RequestHandler. Each user's request is served
-// the pod template named after their username (or the default template).
+// the pod template named exactly after their username. Unmatched usernames
+// are denied; there is no default-template or base-config fallback.
 //
 // In persistent mode it additionally derives the box identity from the
 // authenticated identity (not the client-chosen username), injects a
@@ -60,19 +59,20 @@ type configHandler struct {
 func (h *configHandler) OnConfig(req config.Request) (config.AppConfig, error) {
 	cfg, source, err := h.load(req.Username)
 	if err != nil {
+		code := logCodeParseError
+		if errors.Is(err, errNoMatchingTemplate) {
+			code = logCodeNoTemplates
+		}
 		h.logger.WithLabel("username", message.LabelValue(req.Username)).
 			Error(message.NewMessage(
-				logCodeParseError,
+				code,
 				"Failed to serve a pod template for user %s: %v",
 				req.Username, err,
 			))
 		return config.AppConfig{}, err
 	}
-	templateName := defaultTemplateName
-	if source != "" {
-		name := filepath.Base(source)
-		templateName = strings.TrimSuffix(name, filepath.Ext(name))
-	}
+	name := filepath.Base(source)
+	templateName := strings.TrimSuffix(name, filepath.Ext(name))
 
 	// Persistent-mode injection is skipped for a template that explicitly
 	// selects a non-persistent mode (a fixed per-user name would break
@@ -84,17 +84,6 @@ func (h *configHandler) OnConfig(req config.Request) (config.AppConfig, error) {
 		}
 	}
 
-	if source == "" {
-		// No matching template: inherit the base config untouched (apart from
-		// any persistent-mode name/label injection keyed to the default box).
-		h.logger.WithLabel("username", message.LabelValue(req.Username)).
-			Debug(message.NewMessage(
-				logCodeNoTemplates,
-				"No pod template matches user %s, using base configuration",
-				req.Username,
-			))
-		return cfg, nil
-	}
 	h.logger.WithLabel("username", message.LabelValue(req.Username)).
 		WithLabel("template", message.LabelValue(filepath.Base(source))).
 		Info(message.NewMessage(
@@ -105,18 +94,24 @@ func (h *configHandler) OnConfig(req config.Request) (config.AppConfig, error) {
 	return cfg, nil
 }
 
-// load returns the template for username, the file it came from ("" = none),
-// or an error if a matching file exists but cannot be parsed.
+// load returns the named template and its source file, or an error when the
+// username is invalid, no matching file exists, or the file cannot be read/parsed.
 func (h *configHandler) load(username string) (config.AppConfig, string, error) {
-	for _, name := range h.candidates(username) {
+	if !validTemplateName(username) {
+		return config.AppConfig{}, "", fmt.Errorf("%w %q: invalid template name", errNoMatchingTemplate, username)
+	}
+	for _, name := range []string{username + ".yaml", username + ".json"} {
 		path, err := safeJoin(h.dir, name)
 		if err != nil {
-			continue
+			return config.AppConfig{}, "", err
 		}
 		info, err := os.Stat(path)
-		if err != nil {
-			// Template not present: try the next candidate.
+		if os.IsNotExist(err) {
+			// Try the other supported extension, never a different template.
 			continue
+		}
+		if err != nil {
+			return config.AppConfig{}, path, err
 		}
 		cfg, err := h.readCached(path, info)
 		if err != nil {
@@ -124,17 +119,7 @@ func (h *configHandler) load(username string) (config.AppConfig, string, error) 
 		}
 		return cfg, path, nil
 	}
-	return config.AppConfig{}, "", nil
-}
-
-// candidates lists the template files to try for a username, always ending
-// with the default catch-all template.
-func (h *configHandler) candidates(username string) []string {
-	u := sanitize(username)
-	if u != defaultTemplateName {
-		return []string{u + ".yaml", u + ".json", defaultTemplateName + ".yaml", defaultTemplateName + ".json"}
-	}
-	return []string{defaultTemplateName + ".yaml", defaultTemplateName + ".json"}
+	return config.AppConfig{}, "", fmt.Errorf("%w %q", errNoMatchingTemplate, username)
 }
 
 // readCached parses and caches a template file, keyed on its size + mtime.
@@ -162,23 +147,20 @@ func (h *configHandler) readCached(path string, info os.FileInfo) (config.AppCon
 	return cfg, nil
 }
 
-// sanitize makes a username safe to use as a file name.
-func sanitize(username string) string {
-	username = strings.TrimSpace(username)
+// validTemplateName prevents unsafe paths and lossy aliases to another template.
+func validTemplateName(username string) bool {
 	if username == "" {
-		return defaultTemplateName
+		return false
 	}
-	var b strings.Builder
 	for _, r := range username {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
 			r == '.', r == '-', r == '_':
-			b.WriteRune(r)
 		default:
-			b.WriteRune('_')
+			return false
 		}
 	}
-	return b.String()
+	return true
 }
 
 // safeJoin returns dir/name after checking that name stays inside dir.

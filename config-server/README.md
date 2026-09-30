@@ -22,9 +22,10 @@ ssh ubuntu@host → ContainerSSH ───────────────�
                                         (merged over ContainerSSH's base config)
 ```
 
-- Lookup: `/config/<username>.yaml` (or `.json`) → fallback `/config/default.yaml` → then an empty
-  config (= ContainerSSH uses its base config unchanged). In persistent mode the resolved template
-  (including the `default` catch-all) is part of the box identity.
+- Lookup: `/config/<username>.yaml`, then `/config/<username>.json`. No match returns an error
+  and denies the SSH connection in every execution mode. There is no catch-all or base-config
+  fallback. `default` is an ordinary template name, used only by `ssh default@host`.
+  Empty or unsafe usernames are rejected, not rewritten into another template name.
 - Files are **partial** `AppConfig`s (a `kubernetes.pod` override) — fields you leave out are
   inherited from ContainerSSH's base config (the chart's `config.yaml`). ContainerSSH merges with
   `mergo.WithOverride`, so unset/empty fields never clobber the base. The injected persistent pod
@@ -43,12 +44,10 @@ With `CONTAINERSSH_OPERATING_MODE=persistent` (the bundled chart renders it from
 - **Canonical identity**: the box is keyed on `authenticatedUsername` from the config request —
   v0.6 always transmits it — *never* the client-chosen SSH username. An empty authenticated
   identity is denied (fail closed).
-- **One box per (owner, template)**: the resolved template name (`<username>.yaml` →
-  `default.yaml`; the `default` catch-all if none matches) is combined with the owner into a
-  deterministic, collision-resistant, DNS-1123 pod name
-  (`box-` + first 10 hex of SHA-256 over owner and template). Unknown usernames collapse onto the
-  same `default` box instead of minting unbounded pods, and two users typing the same username
-  never share a pod.
+- **One box per (owner, template)**: the matching template name is combined with the owner into
+  a deterministic, collision-resistant, DNS-1123 pod name
+  (`box-` + first 10 hex of SHA-256 over owner and template). Unknown usernames are denied before
+  pod listing or name injection, and two users typing the same username never share a pod.
 - **Owner label**: every persistent pod is labelled `dev.box/owner` = a deterministic, valid
   Kubernetes label value derived from the authenticated username (verbatim for normal usernames,
   sanitized + hashed otherwise) — used for audit and cap counting.
@@ -100,7 +99,7 @@ templates, the RuntimeClass and guest image are inherited from the chart's base 
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `CONTAINERSSH_CONFIG_DIR` | `/config` | Directory with `<username>.yaml` / `default.yaml` template files |
+| `CONTAINERSSH_CONFIG_DIR` | `/config` | Directory with `<username>.yaml` / `<username>.json` template files |
 | `CONTAINERSSH_LISTEN` | `0.0.0.0:8080` | Listen address |
 | `CONTAINERSSH_LOG_LEVEL` | `6` | Syslog-style: `7` debug, `6` info, `5` notice, `4` warning, `3` error, `2` crit |
 | `CONTAINERSSH_OPERATING_MODE` | `connection` | `connection`, `session` or `persistent`. Only `persistent` enables name/label injection + the cap (see above) |
@@ -138,16 +137,13 @@ settings, so keep it TLS/mTLS rather than plain HTTP.
 
 ## Design notes
 
-- **Deterministic per user**: the lookup is `<username>.yaml` → `default.yaml` → base. In persistent
-  mode the box identity is (authenticated owner, resolved template) — deterministic and
-  replica-safe (no coordination or shared state beyond the stateless pod-listing call).
-- **"default" is the catch-all**: name one template `default` to give unmatched users a pod; leave
-  it out to fall back to the base pod for unknown users. Either way, in persistent mode unknown
-  usernames resolve to one shared `default` box per authenticated owner.
-- **Rejecting users is not its job**: this is the *config* server. Authentication/authorization
-  belongs to the auth server. Errors here are for genuine server-side problems **plus** the
-  persistent-mode denials (empty identity, at-cap new box, pod-list failure) that ContainerSSH
-  surfaces as its generic fail-closed "Cannot authenticate at this time".
+- **Deterministic per user**: only an exact named template is served. In persistent mode the box
+  identity is (authenticated owner, resolved template) — deterministic and replica-safe
+  (no coordination or shared state beyond the stateless pod-listing call).
+- **Fail-closed selection**: missing templates return an error rather than granting access to a
+  default image. Authentication/authorization still belongs to the auth server. Template errors
+  and persistent-mode denials (empty identity, at-cap new box, pod-list failure) are surfaced by
+  ContainerSSH as its generic "Cannot authenticate at this time" after config-request retries.
 - **Persistent = pod lifecycle, not storage**: the pod survives disconnects and is never deleted by
   this server, but its writable layer dies with pod deletion/eviction/node loss. Data that must
   survive needs a PVC or another durable store. Template changes also don't mutate an
