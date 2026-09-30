@@ -305,6 +305,12 @@ Net effect: each user selects a pod flavor by connecting with its template name.
 catch-all: `default` is an ordinary template usable only by `ssh default@host`. An empty list
 with the bundled config server enabled denies all connections.
 
+With both bundled servers enabled, the chart also passes these names to the auth-server's
+`AUTH_SERVER_ALLOWED_TEMPLATES` authorization policy. Unknown SSH usernames receive a prompt
+`Permission denied`, before reaching the config webhook. Without this authorization gate,
+ContainerSSH v0.6 retries config-webhook errors until timeout and then closes SSH without showing
+the template error. External authorization webhooks must provide their own early template gate.
+
 Example `values.yaml` (the base pod and these metadata-only templates automatically use
 `kata-qemu-runtime-rs` while `kata.enabled=true`):
 
@@ -361,7 +367,7 @@ helm install containerssh . \
 SSH key auth asks authentik one question: **which user has this exact public key?** The bundled
 server performs one exact users query for the string supplied by ContainerSSH against
 `attributes.sshPublicKey`. It exposes ContainerSSH's `/pubkey` webhook plus the interface-required
-`/password` (always denied) and `/authz` (optional authentik group gate) endpoints. Pod
+`/password` (always denied) and `/authz` (template-name and optional authentik group gates) endpoints. Pod
 configuration is the separate bundled config server's job — this server never serves `/config`.
 
 Before enabling it:

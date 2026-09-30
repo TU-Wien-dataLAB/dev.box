@@ -48,10 +48,17 @@ owner.
 | --- | --- |
 | `POST /pubkey` | authentik-backed SSH public-key authentication |
 | `POST /password` | always denied; required only by ContainerSSH's handler interface |
-| `POST /authz` | optional authentik group gate (`AUTH_SERVER_REQUIRE_GROUP`) |
+| `POST /authz` | optional SSH-template allowlist and authentik group gate |
 
 The server uses ContainerSSH's official `auth/webhook` package. Pod configuration is exclusively
 the separate config-server's responsibility.
+
+When `AUTH_SERVER_ALLOWED_TEMPLATES` is set, authorization checks the client-chosen SSH username
+against that exact list before applying the group gate. Unknown names return HTTP 200 with
+`success: false`, producing an immediate SSH `Permission denied`. This avoids ContainerSSH v0.6's
+config-webhook behavior: non-200 responses are retried every ten seconds until timeout, then SSH
+closes without displaying the config error. The config-server still rejects unmatched names as a
+safety net. `default` is not a wildcard.
 
 ## Environment
 
@@ -64,6 +71,7 @@ the separate config-server's responsibility.
 | `AUTHENTIK_INSECURE_SKIP_VERIFY` | `false` | skip TLS verification; development only |
 | `AUTH_SERVER_KEY_ATTRIBUTE` | `sshPublicKey` | authentik user attribute the presented key is looked up by; the stored value must be a single-element JSON list containing the exact key string |
 | `AUTH_SERVER_REQUIRE_GROUP` | — | optional authentik group required after authentication |
+| `AUTH_SERVER_ALLOWED_TEMPLATES` | unset (gate disabled) | JSON array of allowed SSH template names; `[]` denies all. Invalid JSON, `null`, or empty names fail startup |
 
 ## Build and test
 
@@ -96,7 +104,11 @@ authServer:
 ```
 
 The chart deploys the webhook and wires ContainerSSH's public-key and authorization webhook URLs
-to it. The authentik token only needs read access to users.
+to it. The authentik token only needs read access to users. When the bundled config server is also
+enabled, the chart sets `AUTH_SERVER_ALLOWED_TEMPLATES` from `kubernetes.podTemplates` automatically.
+Changes to template names update the auth-server Deployment and trigger a rollout. An external
+config server does not auto-enable the template gate; standalone deployments must supply the list.
+An overridden external authorization webhook must implement its own template check.
 
 ## Security properties
 

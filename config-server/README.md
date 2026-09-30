@@ -34,7 +34,10 @@ ssh ubuntu@host → ContainerSSH ───────────────�
 - File changes are picked up automatically (ConfigMap volumes are synced by the kubelet; the server
   caches parsed templates keyed on file mtime).
 - The protocol is fail-closed on the ContainerSSH side: if the server returns non-200 or errors,
-  the SSH connection is denied.
+  the SSH connection is denied **after retries**, not immediately. ContainerSSH v0.6 retries config
+  errors every ten seconds until timeout, then closes SSH without showing the template error.
+  With both bundled servers enabled, the auth-server checks the chart's template-name allowlist
+  during authorization instead, giving unknown names an immediate SSH `Permission denied`.
 
 ## Persistent mode (dev.box target)
 

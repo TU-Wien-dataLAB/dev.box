@@ -5,7 +5,8 @@
 // go.containerssh.io/containerssh/auth/webhook package.
 //
 // The required interface exposes /password, /pubkey, and /authz. Only
-// /pubkey can authenticate; password always denies and authorization allows.
+// /pubkey can authenticate; password always denies. Authorization can enforce
+// template selection and authentik group membership.
 //
 // The authentik side lives in authentik.go (API client) and auth_handler.go
 // (the handler). The server performs one exact authentik users query for the
@@ -17,6 +18,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
@@ -35,14 +37,15 @@ import (
 
 // Environment variables (see README.md for the full table).
 const (
-	envListen        = "CONTAINERSSH_LISTEN"
-	envLogLevel      = "CONTAINERSSH_LOG_LEVEL"
-	envAuthentikURL  = "AUTHENTIK_URL"
-	envAuthToken     = "AUTHENTIK_TOKEN"
-	envAuthTokenFile = "AUTHENTIK_TOKEN_FILE"
-	envInsecure      = "AUTHENTIK_INSECURE_SKIP_VERIFY"
-	envKeyAttribute  = "AUTH_SERVER_KEY_ATTRIBUTE"
-	envRequireGroup  = "AUTH_SERVER_REQUIRE_GROUP"
+	envListen           = "CONTAINERSSH_LISTEN"
+	envLogLevel         = "CONTAINERSSH_LOG_LEVEL"
+	envAuthentikURL     = "AUTHENTIK_URL"
+	envAuthToken        = "AUTHENTIK_TOKEN"
+	envAuthTokenFile    = "AUTHENTIK_TOKEN_FILE"
+	envInsecure         = "AUTHENTIK_INSECURE_SKIP_VERIFY"
+	envKeyAttribute     = "AUTH_SERVER_KEY_ATTRIBUTE"
+	envRequireGroup     = "AUTH_SERVER_REQUIRE_GROUP"
+	envAllowedTemplates = "AUTH_SERVER_ALLOWED_TEMPLATES"
 )
 
 func main() {
@@ -82,8 +85,13 @@ func main() {
 		keyAttribute,
 	))
 	// ---- auth behaviour ---------------------------------------------------
+	allowedTemplates, err := allowedTemplatesFromEnv()
+	if err != nil {
+		fail(logger, "AUTH_DEV_START_FAILED", "%v", err)
+	}
 	authCfg := authConfig{
-		RequireGroup: env(envRequireGroup, ""),
+		RequireGroup:     env(envRequireGroup, ""),
+		AllowedTemplates: allowedTemplates,
 	}
 
 	// ---- server + service lifecycle --------------------------------------
@@ -144,6 +152,28 @@ func main() {
 		))
 		os.Exit(1)
 	}
+}
+
+// allowedTemplatesFromEnv distinguishes an unset policy from an empty allowlist.
+// Invalid configuration fails startup rather than silently disabling the gate.
+func allowedTemplatesFromEnv() ([]string, error) {
+	raw, configured := os.LookupEnv(envAllowedTemplates)
+	if !configured {
+		return nil, nil
+	}
+	var names []string
+	if err := json.Unmarshal([]byte(raw), &names); err != nil {
+		return nil, fmt.Errorf("%s must be a JSON array of template names: %w", envAllowedTemplates, err)
+	}
+	if names == nil {
+		return nil, fmt.Errorf("%s must be an array, not null", envAllowedTemplates)
+	}
+	for _, name := range names {
+		if name == "" {
+			return nil, fmt.Errorf("%s must not contain empty template names", envAllowedTemplates)
+		}
+	}
+	return names, nil
 }
 
 // tokenFromEnv resolves the read token from AUTHENTIK_TOKEN or AUTHENTIK_TOKEN_FILE.

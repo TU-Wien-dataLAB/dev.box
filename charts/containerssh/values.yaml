@@ -181,6 +181,8 @@ kubernetes:
   # `ssh <name>@host` uses the template named after that username:
   # the config server serves <name>.yaml to that user. Users with no exact
   # matching template are denied; there is no catch-all or base-pod fallback.
+  # With authServer.enabled=true, these names also become an authz allowlist:
+  # unknown SSH usernames are rejected immediately instead of config retries.
   # "default" is an ordinary name, used only by `ssh default@host`. Each item is a partial
   # kubernetes.pod override (mode/metadata/spec/...); everything you leave out
   # is inherited from `pod` above / the base config.

@@ -10,7 +10,7 @@ backend**. The deployment target is ContainerSSH's **persistent** execution mode
 connection creates a stable per-user pod, later connections exec into that same pod, and
 disconnecting does not delete it. It consists of:
 
-1. **`charts/containerssh/`** — a Helm chart (v2, `containerssh-0.3.0`, `appVersion: 0.6`) with an optional official Kata Containers dependency that
+1. **`charts/containerssh/`** — a Helm chart (v2, `containerssh-0.3.1`, `appVersion: 0.6`) with an optional official Kata Containers dependency that
    deploys ContainerSSH itself plus optional extras.
 2. **`config-server/`** — a small Go server implementing the ContainerSSH config webhook protocol
    (built on `go.containerssh.io/containerssh` `config/webhook`), serving **pod templates selected
@@ -35,7 +35,7 @@ Source of truth for ContainerSSH internals: `/Users/matthiasmatt/Documents/Work/
 dev.box/
 ├── AGENTS.md                  ← this file
 ├── charts/containerssh/       ← the Helm chart
-│   ├── Chart.yaml             (name containerssh, v0.3.0, appVersion 0.6)
+│   ├── Chart.yaml             (name containerssh, v0.3.1, appVersion 0.6)
 │   ├── values.yaml            (everything is configurable from here)
 │   ├── README.md
 │   └── templates/
@@ -214,7 +214,13 @@ ssh ubuntu@dev.box.example.com
   restart the Deployment manually after changing that object.
 - **Named templates are required by the config server** — unmatched SSH usernames return an
   error in every mode (issue #6). There is no `default` or base-config fallback. `default` is an
-  ordinary template name. Deployed and verified in release revision 18 (2026-09-30).
+  ordinary template name. ContainerSSH retries non-200 config responses every ten seconds until
+  timeout, then silently closes SSH. With both bundled servers enabled, the chart also passes an
+  exact-name `AUTH_SERVER_ALLOWED_TEMPLATES` JSON allowlist to auth-server; its authz gate returns
+  HTTP 200 + `success: false` for unknown names, yielding immediate SSH `Permission denied`.
+  An empty list denies all, unset disables the gate, and malformed policy fails auth-server startup.
+  The optional authentik group gate still applies. External authz webhooks need their own early
+  template gate; config-server rejection remains the safety net.
 - **User pods vs. ContainerSSH pod**: the chart ships security defaults for backend user pods
   (`runAsNonRoot`, `runAsUser: 1000`, `allowPrivilegeEscalation: false`, cpu/mem limits). The
   NetworkPolicy deliberately has **no pod-security `enforce` label** — a restricted PSS profile
@@ -239,6 +245,7 @@ helm template smoke charts/containerssh -n containerssh \
   --set kubernetes.mode=connection \
   --set auth.publicKey.webhook.url=https://auth.example.test            # render
 tests/chart-auth-rendering.sh                                        # auth render matrix
+tests/chart-template-authorization.sh                                # template allowlist wiring
 tests/chart-service-selector.sh                                      # SSH Service isolation
 tests/chart-kata-rendering.sh                                         # Kata installer toggle + backend RuntimeClass
 tests/chart-persistent-rendering.sh                                  # persistent-mode render matrix (mode, cap, RBAC)
@@ -252,6 +259,9 @@ docker build -t config-server:dev config-server/                  # image
 # auth server
 (cd auth-server && go build ./... && go vet ./... && go test ./...)
 docker build -t auth-server:dev auth-server/                      # image
+
+# Live regression (local SSH port-forward + enrolled key + known ubuntu template):
+python3 tests/ssh-template-rejection.py --key ~/.ssh/slurm_tu_wien  # deny within 5s
 
 ```
 

@@ -109,7 +109,7 @@ The same listener exposes the protocol-complete endpoints:
 | --- | --- |
 | `POST /password` | always deny; present only to satisfy the handler interface |
 | `POST /pubkey` | public-key flow above |
-| `POST /authz` | allow, or apply the configured authentik group gate |
+| `POST /authz` | apply the configured template-name allowlist and authentik group gate; allow if both gates pass or are disabled |
 | other path | `404` |
 
 ## Configuration
@@ -118,6 +118,12 @@ Required:
 
 - `AUTHENTIK_URL`
 - `AUTHENTIK_TOKEN` or `AUTHENTIK_TOKEN_FILE`
+
+Optional authorization policy: `AUTH_SERVER_ALLOWED_TEMPLATES` is a JSON array of exact SSH
+username/template names (unset disables the gate; `[]` denies all). The bundled chart sets it from
+`kubernetes.podTemplates` when both servers are enabled. Template denials return HTTP 200 with
+`success: false`, not an error that triggers ContainerSSH retries. `AUTH_SERVER_REQUIRE_GROUP`
+continues to apply after template selection.
 
 There is intentionally no fingerprint mode, username-binding mode, password allowlist, write token,
 synchronization interval, custom-CA setting, or server-side TLS/mTLS configuration. The attribute

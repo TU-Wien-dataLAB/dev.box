@@ -75,6 +75,16 @@ spec:
               value: {{ required "authServer.authentik.url is required when authServer.enabled" .Values.authServer.authentik.url | quote }}
             - name: AUTHENTIK_TOKEN_FILE
               value: /var/run/secrets/dev.box/token
+            {{- if .Values.configServer.enabled }}
+            {{- $templates := list }}
+            {{- range $i, $tpl := .Values.kubernetes.podTemplates }}
+            {{- $templates = append $templates (default (printf "template-%d" $i) $tpl.name) }}
+            {{- end }}
+            # Reject unknown SSH template names during authz, before the config
+            # webhook (whose HTTP errors ContainerSSH retries until timeout).
+            - name: AUTH_SERVER_ALLOWED_TEMPLATES
+              value: {{ $templates | toJson | quote }}
+            {{- end }}
             {{- with .Values.authServer.requireGroup }}
             - name: AUTH_SERVER_REQUIRE_GROUP
               value: {{ . | quote }}

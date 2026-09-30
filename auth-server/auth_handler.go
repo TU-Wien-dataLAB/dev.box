@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"go.containerssh.io/containerssh/auth"
@@ -20,11 +21,14 @@ const (
 	logCodeAuthzError    = "AUTH_SERVER_AUTHZ_ERROR"
 )
 
-// authConfig carries the optional post-auth group policy.
+// authConfig carries optional post-auth template and group policies.
 type authConfig struct {
 	// RequireGroup, when set, makes OnAuthorization demand membership of this
 	// authentik group before the session starts.
 	RequireGroup string
+	// AllowedTemplates gates the client-chosen SSH username before config lookup.
+	// nil disables this gate; a non-nil empty list denies every template.
+	AllowedTemplates []string
 }
 
 // authHandler implements ContainerSSH's required authentication interface.
@@ -102,12 +106,22 @@ func (h *authHandler) OnPubKey(
 	return true, meta.Authenticated(user.Username), nil
 }
 
-// OnAuthorization runs after a successful authentication. By default it allows
-// everyone through; with AUTH_SERVER_REQUIRE_GROUP set it gates access on
-// membership of that authentik group.
+// OnAuthorization runs after a successful authentication. Template denials are
+// ordinary authz failures, not webhook errors: ContainerSSH rejects immediately
+// instead of retrying config requests until its timeout. The optional group gate
+// still applies to allowed templates.
 func (h *authHandler) OnAuthorization(
 	meta metadata.ConnectionAuthenticatedMetadata,
 ) (bool, metadata.ConnectionAuthenticatedMetadata, error) {
+	if h.cfg.AllowedTemplates != nil && !slices.Contains(h.cfg.AllowedTemplates, string(meta.Username)) {
+		h.logger.WithLabel("username", message.LabelValue(meta.Username)).
+			Info(message.NewMessage(
+				logCodeAuthzDenied,
+				"Authorization denied: no pod template matches SSH username %s",
+				meta.Username,
+			))
+		return false, meta, nil
+	}
 	if h.cfg.RequireGroup == "" {
 		return true, meta, nil
 	}
