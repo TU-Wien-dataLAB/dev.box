@@ -214,7 +214,7 @@ ssh ubuntu@dev.box.example.com
   restart the Deployment manually after changing that object.
 - **Named templates are required by the config server** — unmatched SSH usernames return an
   error in every mode (issue #6). There is no `default` or base-config fallback. `default` is an
-  ordinary template name. This source change must be built/deployed before live behavior changes.
+  ordinary template name. Deployed and verified in release revision 18 (2026-09-30).
 - **User pods vs. ContainerSSH pod**: the chart ships security defaults for backend user pods
   (`runAsNonRoot`, `runAsUser: 1000`, `allowPrivilegeEscalation: false`, cpu/mem limits). The
   NetworkPolicy deliberately has **no pod-security `enforce` label** — a restricted PSS profile
@@ -265,10 +265,10 @@ representative persistent and non-persistent webhook merges to the real
 - Target cluster context: **`container-ssh`** (created; control plane reachable).
   Current default context is `container-ssh` — still pass `--kube-context container-ssh` explicitly
   (helm) / `--context container-ssh` (kubectl).
-- Helm release `containerssh` revision 17 is **deployed** in namespace `containerssh` with chart
+- Helm release `containerssh` revision 18 is **deployed** in namespace `containerssh` with chart
   `0.3.0` in persistent mode (upgraded 2026-09-30); ContainerSSH, auth-server, and config-server are
-  all Ready. Ingress remains disabled (ClusterIP + local port-forward). Existing user values,
-  immutable webhook image tags, and Secret references were preserved.
+  all Ready. Ingress remains disabled (ClusterIP + local port-forward). The revision 18 upgrade
+  changed only `configServer.image.tag`; all other user values and Secret references were preserved.
 - Kata 4.2.0 is installed by the chart's `kata` DaemonSet, Ready on both workers (not the tainted
   control-plane nodes). `kata-qemu-runtime-rs` exists, and both workers advertise
   `katacontainers.io/kata-runtime=true`. The generated base config selects it for new user pods.
@@ -285,9 +285,16 @@ representative persistent and non-persistent webhook merges to the real
   The owner's next `ssh ubuntu@…` recreated `box-8bbfc143fa` on 2026-09-30 using
   `kata-qemu-runtime-rs` (UID `b2abba32-495f-4212-a16c-b2490144789c`). The new box is Running/Ready
   on worker `container-ssh-worker-k4v2m-mfq8d`; exec verified Kata guest kernel `6.18.35`.
-- Both bundled servers are pinned to immutable tag `sha-dfa829e`. The authentik read token and
-  stable host key are mounted from existing Secrets (`containerssh-authentik-token`,
-  `containerssh-host-key`).
+- The config server is pinned to immutable tag `sha-270e2fd` (issue #6), image digest
+  `sha256:04597f9f6a11c52662ef874d69eb990435ac790de5952e39be005bef28929b19`;
+  auth-server remains at `sha-dfa829e`. The authentik read token and stable host key are mounted
+  from existing Secrets (`containerssh-authentik-token`, `containerssh-host-key`).
+- Issue #6 was verified live on 2026-09-30: the config webhook returned HTTP 200 for `ubuntu`
+  and HTTP 500 for an unmatched username, absent `default` template, and empty username. An
+  enrolled-key SSH login as `issue6-no-template` was rejected (exit 255) after config retries,
+  with `CONFIG_SERVER_NO_TEMPLATES` logged. Two `ubuntu` SSH reconnects succeeded under Kata
+  kernel `6.18.35` and retained pod `box-8bbfc143fa` UID
+  `b2abba32-495f-4212-a16c-b2490144789c`. No user pods were created or deleted.
 - A real persistent-mode reconnect check passed on 2026-09-18: two sequential
   `ssh -i ~/.ssh/slurm_tu_wien -o IdentitiesOnly=yes -p 2222 ubuntu@localhost 'printf READY'`
   connections crossed ContainerSSH → auth-server → production authentik → config-server → guest
@@ -314,7 +321,8 @@ Remaining before the staged persistent-mode validation:
      reconnect-exempt, fail-closed on listing errors and empty identities). Deletion/retention is
      explicit: no auto-deletion anywhere, documented in the chart README/NOTES. The real-cluster
      disconnect/reconnect stage passed on 2026-09-18.
-  2. ✅ Both bundled images are pinned to immutable `sha-dfa829e` tags.
+  2. ✅ Both bundled images are pinned to immutable tags: config-server `sha-270e2fd`,
+     auth-server `sha-dfa829e`.
   3. Run the remaining cap-boundary, negative, policy, and fail-closed stages in
      `tests/cluster-deployment-spec.md`.
   4. Optional, later: `ingress.enabled=true` + the one-time Traefik TCP entrypoint/port setup
