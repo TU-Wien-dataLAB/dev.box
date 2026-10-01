@@ -1,0 +1,475 @@
+diff --git a/internal/auditlogintegration/handler_networkconnection.go b/internal/auditlogintegration/handler_networkconnection.go
+index 4eac415..0a4b08a 100644
+--- a/internal/auditlogintegration/handler_networkconnection.go
++++ b/internal/auditlogintegration/handler_networkconnection.go
+@@ -64,6 +64,10 @@ func (n *networkConnectionHandler) OnShutdown(shutdownContext context.Context) {
+ 	n.backend.OnShutdown(shutdownContext)
+ }
+ 
++func (n *networkConnectionHandler) AuthenticationMethods() sshserver.AuthenticationMethods {
++	return sshserver.AuthenticationMethodsFor(n.backend)
++}
++
+ func (n *networkConnectionHandler) OnAuthPassword(
+ 	meta metadata.ConnectionAuthPendingMetadata,
+ 	password []byte,
+diff --git a/internal/authintegration/advertisement_matrix_test.go b/internal/authintegration/advertisement_matrix_test.go
+new file mode 100644
+index 0000000..1a17e94
+--- /dev/null
++++ b/internal/authintegration/advertisement_matrix_test.go
+@@ -0,0 +1,173 @@
++package authintegration_test
++
++import (
++	"fmt"
++	"net/http"
++	"net/http/httptest"
++	"os/exec"
++	"regexp"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/stretchr/testify/require"
++	"go.containerssh.io/containerssh/config"
++	"go.containerssh.io/containerssh/internal/auth"
++	"go.containerssh.io/containerssh/internal/authintegration"
++	"go.containerssh.io/containerssh/internal/geoip/dummy"
++	"go.containerssh.io/containerssh/internal/metrics"
++	"go.containerssh.io/containerssh/internal/sshserver"
++	"go.containerssh.io/containerssh/internal/structutils"
++	"go.containerssh.io/containerssh/log"
++	"go.containerssh.io/containerssh/metadata"
++	"golang.org/x/crypto/ssh"
++)
++
++func TestOpenSSHAuthenticationMatrix(t *testing.T) {
++	for _, tc := range []struct {
++		name                             string
++		password, publicKey, interactive bool
++		methods                          []string
++	}{
++		{"password", true, false, false, []string{"password"}},
++		{"public-key", false, true, false, []string{"publickey"}},
++		{"keyboard-interactive", false, false, true, []string{"keyboard-interactive"}},
++		{"password-and-key", true, true, false, []string{"password", "publickey"}},
++		{"password-and-interactive", true, false, true, []string{"password", "keyboard-interactive"}},
++		{"key-and-interactive", false, true, true, []string{"publickey", "keyboard-interactive"}},
++		{"all", true, true, true, []string{"password", "publickey", "keyboard-interactive"}},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			key, signer := fixtureKey(t)
++			logger := log.NewTestLogger(t)
++			webhookHandler := auth.NewHandler(&advertisementAuthHandler{
++				key: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey()))),
++			}, logger)
++			webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				if r.URL.Path == "/token" {
++					require.NoError(t, r.ParseForm())
++					require.Equal(t, "fixture-code", r.Form.Get("code"))
++					w.Header().Set("Content-Type", "application/json")
++					_, _ = w.Write([]byte(`{"access_token":"fixture-token","token_type":"Bearer"}`))
++					return
++				}
++				webhookHandler.ServeHTTP(w, r)
++			}))
++			t.Cleanup(webhook.Close)
++			webhookConfig := config.AuthWebhookClientConfig{
++				HTTPClientConfiguration: config.HTTPClientConfiguration{URL: webhook.URL, Timeout: time.Second},
++				AuthTimeout:             time.Second,
++			}
++			cfg := config.AuthConfig{Authz: config.AuthzConfig{Method: config.AuthzMethodWebhook, Webhook: webhookConfig}}
++			var enabled []ssh.AuthMethod
++			if tc.password {
++				cfg.PasswordAuth = config.PasswordAuthConfig{Method: config.PasswordAuthMethodWebhook, Webhook: webhookConfig}
++				enabled = append(enabled, ssh.Password("fixture-password"))
++			}
++			if tc.publicKey {
++				cfg.PublicKeyAuth = config.PublicKeyAuthConfig{Method: config.PubKeyAuthMethodWebhook, Webhook: webhookConfig}
++				enabled = append(enabled, ssh.PublicKeys(signer))
++			}
++			if tc.interactive {
++				cfg.KeyboardInteractiveAuth.Method = config.KeyboardInteractiveAuthMethodOAuth2
++				oauth := &cfg.KeyboardInteractiveAuth.OAuth2
++				structutils.Defaults(oauth)
++				oauth.Provider = config.AuthOAuth2GenericProvider
++				oauth.ClientID, oauth.ClientSecret = "fixture-client", "fixture-secret"
++				oauth.Generic = config.AuthGenericConfig{
++					AuthorizeEndpointURL: webhook.URL + "/authorize", RedirectURI: webhook.URL + "/callback",
++					TokenEndpoint: config.HTTPClientConfiguration{URL: webhook.URL + "/token", Timeout: time.Second},
++				}
++				enabled = append(enabled, ssh.KeyboardInteractive(func(user, instruction string, questions []string, echos []bool) ([]string, error) {
++					require.Len(t, questions, 1)
++					return []string{"fixture-state|fixture-code"}, nil
++				}))
++			}
++			handler, _, err := authintegration.New(cfg, sshserver.NewTestHandler(), logger, metrics.New(dummy.New()), authintegration.BehaviorNoPassthrough)
++			require.NoError(t, err)
++			srv := sshserver.NewTestServer(t, handler, logger, nil)
++			srv.Start()
++			// Exercise each enabled method separately on the same SSH transport.
++			for _, method := range enabled {
++				connectWithMethod(t, srv, method)
++			}
++			output, err, _ := observeOpenSSH(t, srv, key, "unknown")
++			var exit *exec.ExitError
++			require.ErrorAs(t, err, &exit, output)
++			require.Equal(t, 255, exit.ExitCode(), output)
++			advertised := regexp.MustCompile(`Authentications that can continue: ([^\r\n]+)`).FindAllStringSubmatch(output, -1)
++			require.NotEmpty(t, advertised, output)
++			for _, match := range advertised {
++				require.ElementsMatch(t, tc.methods, strings.Split(match[1], ","), output)
++			}
++		})
++	}
++}
++
++func connectWithMethod(t *testing.T, srv sshserver.TestServer, method ssh.AuthMethod) {
++	t.Helper()
++	hostKey, err := ssh.ParsePrivateKey([]byte(srv.GetHostKey()))
++	require.NoError(t, err)
++	client, err := ssh.Dial("tcp", srv.GetListen(), &ssh.ClientConfig{
++		User: "configured", Auth: []ssh.AuthMethod{method},
++		HostKeyCallback: ssh.FixedHostKey(hostKey.PublicKey()), Timeout: 5 * time.Second,
++	})
++	require.NoError(t, err)
++	require.NoError(t, client.Close())
++}
++
++func TestAuthenticationPassthrough(t *testing.T) {
++	for _, behavior := range []authintegration.Behavior{
++		authintegration.BehaviorPassthroughOnSuccess,
++		authintegration.BehaviorPassthroughOnFailure,
++		authintegration.BehaviorPassthroughOnUnavailable,
++	} {
++		t.Run(fmt.Sprint(behavior), func(t *testing.T) {
++			logger := log.NewTestLogger(t)
++			webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				if behavior == authintegration.BehaviorPassthroughOnUnavailable {
++					w.WriteHeader(http.StatusServiceUnavailable)
++					return
++				}
++				w.Header().Set("Content-Type", "application/json")
++				if behavior == authintegration.BehaviorPassthroughOnSuccess {
++					_, _ = w.Write([]byte(`{"success":true,"authenticatedUsername":"owner"}`))
++				} else {
++					_, _ = w.Write([]byte(`{"success":false}`))
++				}
++			}))
++			t.Cleanup(webhook.Close)
++			handler, _, err := authintegration.New(config.AuthConfig{
++				PasswordAuth: config.PasswordAuthConfig{Method: config.PasswordAuthMethodWebhook,
++					Webhook: config.AuthWebhookClientConfig{
++						HTTPClientConfiguration: config.HTTPClientConfiguration{URL: webhook.URL, Timeout: time.Second},
++						AuthTimeout:             100 * time.Millisecond,
++					}},
++			}, &passthroughBackend{Handler: sshserver.NewTestHandler()}, logger, metrics.New(dummy.New()), behavior)
++			require.NoError(t, err)
++			srv := sshserver.NewTestServer(t, handler, logger, nil)
++			srv.Start()
++			connectWithMethod(t, srv, ssh.Password("backend-password"))
++		})
++	}
++}
++
++// The backend implements the existing handler contract without a capability
++// declaration: legacy passthrough backends must keep working after the change.
++type passthroughBackend struct{ sshserver.Handler }
++
++func (b *passthroughBackend) OnNetworkConnection(meta metadata.ConnectionMetadata) (sshserver.NetworkConnectionHandler, metadata.ConnectionMetadata, error) {
++	backend, meta, err := b.Handler.OnNetworkConnection(meta)
++	return &passthroughNetwork{NetworkConnectionHandler: backend}, meta, err
++}
++
++type passthroughNetwork struct {
++	sshserver.NetworkConnectionHandler
++}
++
++func (b *passthroughNetwork) OnAuthPassword(meta metadata.ConnectionAuthPendingMetadata, password []byte) (sshserver.AuthResponse, metadata.ConnectionAuthenticatedMetadata, error) {
++	if string(password) == "backend-password" {
++		return sshserver.AuthResponseSuccess, meta.Authenticated("owner"), nil
++	}
++	return sshserver.AuthResponseFailure, meta.AuthFailed(), nil
++}
+diff --git a/internal/authintegration/advertisement_test.go b/internal/authintegration/advertisement_test.go
+new file mode 100644
+index 0000000..09a528f
+--- /dev/null
++++ b/internal/authintegration/advertisement_test.go
+@@ -0,0 +1,144 @@
++package authintegration_test
++
++import (
++	"context"
++	"crypto/ed25519"
++	"crypto/rand"
++	"encoding/pem"
++	"net"
++	"net/http/httptest"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"regexp"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/stretchr/testify/require"
++	publicAuth "go.containerssh.io/containerssh/auth"
++	"go.containerssh.io/containerssh/config"
++	"go.containerssh.io/containerssh/internal/auditlogintegration"
++	"go.containerssh.io/containerssh/internal/auth"
++	"go.containerssh.io/containerssh/internal/authintegration"
++	"go.containerssh.io/containerssh/internal/geoip/dummy"
++	"go.containerssh.io/containerssh/internal/metrics"
++	"go.containerssh.io/containerssh/internal/metricsintegration"
++	"go.containerssh.io/containerssh/internal/sshserver"
++	"go.containerssh.io/containerssh/log"
++	"go.containerssh.io/containerssh/metadata"
++	"golang.org/x/crypto/ssh"
++)
++
++// These tests deliberately leave OpenSSH's authentication preferences and batch
++// mode alone: either would hide the disabled-method advertisement regression.
++func TestOpenSSHPublicKeyOnly(t *testing.T) {
++	_, err := exec.LookPath("ssh")
++	require.NoError(t, err, "OpenSSH is required for the advertisement regression")
++	key, signer := fixtureKey(t)
++	unenrolled, _ := fixtureKey(t)
++	logger := log.NewTestLogger(t)
++	webhook := httptest.NewServer(auth.NewHandler(&advertisementAuthHandler{
++		key: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey()))),
++	}, logger))
++	t.Cleanup(webhook.Close)
++	webhookConfig := config.AuthWebhookClientConfig{
++		HTTPClientConfiguration: config.HTTPClientConfiguration{URL: webhook.URL, Timeout: time.Second},
++		AuthTimeout:             time.Second,
++	}
++	handler, _, err := authintegration.New(config.AuthConfig{
++		PublicKeyAuth: config.PublicKeyAuthConfig{Method: config.PubKeyAuthMethodWebhook, Webhook: webhookConfig},
++		Authz:         config.AuthzConfig{Method: config.AuthzMethodWebhook, Webhook: webhookConfig},
++	}, sshserver.NewTestHandler(), logger, metrics.New(dummy.New()), authintegration.BehaviorNoPassthrough)
++	require.NoError(t, err)
++	handler, err = metricsintegration.NewHandler(config.MetricsConfig{Enable: true}, metrics.New(dummy.New()), handler)
++	require.NoError(t, err)
++	handler, err = auditlogintegration.New(config.AuditLogConfig{Enable: true, Format: config.AuditLogFormatNone, Storage: config.AuditLogStorageNone}, handler, dummy.New(), logger)
++	require.NoError(t, err)
++	srv := sshserver.NewTestServer(t, handler, logger, nil)
++	srv.Start()
++
++	// Same key and transport must work before interpreting any denial as a pass.
++	output, err := runOpenSSH(t, srv, key, "configured")
++	require.NoError(t, err, output)
++	require.Contains(t, output, "READY")
++	for _, tc := range []struct{ name, username, key string }{
++		{"unknown-template", "unknown", key},
++		{"unenrolled-key", "configured", unenrolled},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			output, err := runOpenSSH(t, srv, tc.key, tc.username)
++			var exit *exec.ExitError
++			require.ErrorAs(t, err, &exit, output)
++			require.Equal(t, 255, exit.ExitCode(), output)
++			require.Contains(t, output, "Permission denied (publickey)")
++			methods := regexp.MustCompile(`Authentications that can continue: ([^\r\n]+)`).FindAllStringSubmatch(output, -1)
++			require.NotEmpty(t, methods, output)
++			for _, match := range methods {
++				require.Equal(t, "publickey", match[1], output)
++			}
++		})
++	}
++}
++
++func fixtureKey(t *testing.T) (string, ssh.Signer) {
++	t.Helper()
++	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
++	require.NoError(t, err)
++	signer, err := ssh.NewSignerFromKey(privateKey)
++	require.NoError(t, err)
++	block, err := ssh.MarshalPrivateKey(privateKey, "advertisement fixture")
++	require.NoError(t, err)
++	path := filepath.Join(t.TempDir(), "key")
++	require.NoError(t, os.WriteFile(path, pem.EncodeToMemory(block), 0600))
++	return path, signer
++}
++
++func runOpenSSH(t *testing.T, srv sshserver.TestServer, key, username string) (string, error) {
++	t.Helper()
++	output, err, prompts := observeOpenSSH(t, srv, key, username)
++	require.Empty(t, prompts, "unexpected interactive prompt: %s", prompts)
++	return output, err
++}
++
++func observeOpenSSH(t *testing.T, srv sshserver.TestServer, key, username string) (string, error, string) {
++	t.Helper()
++	dir := t.TempDir()
++	hostKey, err := ssh.ParsePrivateKey([]byte(srv.GetHostKey()))
++	require.NoError(t, err)
++	host, port, err := net.SplitHostPort(srv.GetListen())
++	require.NoError(t, err)
++	knownHosts := filepath.Join(dir, "known_hosts")
++	require.NoError(t, os.WriteFile(knownHosts, []byte("["+host+"]:"+port+" "+string(ssh.MarshalAuthorizedKey(hostKey.PublicKey()))), 0600))
++	askpass := filepath.Join(dir, "askpass")
++	prompts := filepath.Join(dir, "prompts")
++	require.NoError(t, os.WriteFile(askpass, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$PROMPT_LOG\"\nexit 1\n"), 0700))
++	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
++	defer cancel()
++	cmd := exec.CommandContext(ctx, "ssh", "-F", "/dev/null", "-vv", "-T", "-i", key,
++		"-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-o", "StrictHostKeyChecking=yes",
++		"-o", "UserKnownHostsFile="+knownHosts, "-o", "GlobalKnownHostsFile=/dev/null",
++		"-p", port, username+"@"+host, "echo READY")
++	cmd.Env = append(os.Environ(), "LC_ALL=C", "SSH_ASKPASS="+askpass, "SSH_ASKPASS_REQUIRE=force", "DISPLAY=advertisement-test", "PROMPT_LOG="+prompts)
++	output, err := cmd.CombinedOutput()
++	require.NoError(t, ctx.Err(), string(output))
++	promptData, readErr := os.ReadFile(prompts)
++	if !os.IsNotExist(readErr) {
++		require.NoError(t, readErr)
++	}
++	return string(output), err, string(promptData)
++}
++
++type advertisementAuthHandler struct{ key string }
++
++func (h *advertisementAuthHandler) OnPassword(meta metadata.ConnectionAuthPendingMetadata, password []byte) (bool, metadata.ConnectionAuthenticatedMetadata, error) {
++	return string(password) == "fixture-password", meta.Authenticated("owner"), nil
++}
++
++func (h *advertisementAuthHandler) OnPubKey(meta metadata.ConnectionAuthPendingMetadata, key publicAuth.PublicKey) (bool, metadata.ConnectionAuthenticatedMetadata, error) {
++	return key.PublicKey == h.key, meta.Authenticated("owner"), nil
++}
++
++func (h *advertisementAuthHandler) OnAuthorization(meta metadata.ConnectionAuthenticatedMetadata) (bool, metadata.ConnectionAuthenticatedMetadata, error) {
++	return meta.Username == "configured", meta, nil
++}
+diff --git a/internal/authintegration/handler.go b/internal/authintegration/handler.go
+index b544c5c..29db8a6 100644
+--- a/internal/authintegration/handler.go
++++ b/internal/authintegration/handler.go
+@@ -116,6 +116,14 @@ type networkConnectionHandler struct {
+ 	authorizationProvider            auth.AuthzProvider
+ }
+ 
++func (h *networkConnectionHandler) AuthenticationMethods() sshserver.AuthenticationMethods {
++	return sshserver.AuthenticationMethods{
++		Password:            h.passwordAuthenticator != nil,
++		PublicKey:           h.publicKeyAuthenticator != nil,
++		KeyboardInteractive: h.keyboardInteractiveAuthenticator != nil,
++	}
++}
++
+ func (h *networkConnectionHandler) OnShutdown(shutdownContext context.Context) {
+ 	h.backend.OnShutdown(shutdownContext)
+ }
+@@ -285,6 +293,10 @@ type authzNetworkConnectionHandler struct {
+ 	authorizationProvider auth.AuthzProvider
+ }
+ 
++func (a *authzNetworkConnectionHandler) AuthenticationMethods() sshserver.AuthenticationMethods {
++	return sshserver.AuthenticationMethodsFor(a.backend)
++}
++
+ // genericAuthorization is a helper function that takes the response of an authentication call (e.g. OnAuthPassword) and performs authorization.
+ func (a *authzNetworkConnectionHandler) genericAuthorization(
+ 	meta metadata.ConnectionAuthPendingMetadata,
+@@ -331,6 +343,9 @@ func (a *authzNetworkConnectionHandler) OnAuthKeyboardInteractive(meta metadata.
+ // OnAuthGSSAPI returns a GSSAPIServer which can perform a GSSAPI authentication.
+ func (a *authzNetworkConnectionHandler) OnAuthGSSAPI(metadata metadata.ConnectionMetadata) auth.GSSAPIServer {
+ 	gssApiServer := a.backend.OnAuthGSSAPI(metadata)
++	if gssApiServer == nil {
++		return nil
++	}
+ 	authzGssApiServer := authzGssApiServer{
+ 		backend: gssApiServer,
+ 	}
+diff --git a/internal/metricsintegration/handler.go b/internal/metricsintegration/handler.go
+index eec427a..87b028f 100644
+--- a/internal/metricsintegration/handler.go
++++ b/internal/metricsintegration/handler.go
+@@ -58,6 +58,10 @@ func (m *metricsNetworkHandler) OnShutdown(shutdownContext context.Context) {
+ 	m.backend.OnShutdown(shutdownContext)
+ }
+ 
++func (m *metricsNetworkHandler) AuthenticationMethods() sshserver.AuthenticationMethods {
++	return sshserver.AuthenticationMethodsFor(m.backend)
++}
++
+ func (m *metricsNetworkHandler) OnAuthPassword(meta metadata.ConnectionAuthPendingMetadata, password []byte) (
+ 	response sshserver.AuthResponse,
+ 	metadata metadata.ConnectionAuthenticatedMetadata,
+diff --git a/internal/security/handler_network.go b/internal/security/handler_network.go
+index 0848e7a..cd4ff49 100644
+--- a/internal/security/handler_network.go
++++ b/internal/security/handler_network.go
+@@ -35,6 +35,10 @@ func (n *networkHandler) OnShutdown(shutdownContext context.Context) {
+ 	n.backend.OnShutdown(shutdownContext)
+ }
+ 
++func (n *networkHandler) AuthenticationMethods() sshserver.AuthenticationMethods {
++	return sshserver.AuthenticationMethodsFor(n.backend)
++}
++
+ func (n *networkHandler) OnAuthPassword(meta metadata.ConnectionAuthPendingMetadata, password []byte) (
+ 	response sshserver.AuthResponse,
+ 	metadata metadata.ConnectionAuthenticatedMetadata,
+diff --git a/internal/sshserver/AuthenticationMethods.go b/internal/sshserver/AuthenticationMethods.go
+new file mode 100644
+index 0000000..cf81e3b
+--- /dev/null
++++ b/internal/sshserver/AuthenticationMethods.go
+@@ -0,0 +1,28 @@
++package sshserver
++
++// AuthenticationMethods describes the SSH authentication callbacks supported by
++// a connection handler. Authorization is not an authentication method. GSSAPI
++// availability continues to be determined by OnAuthGSSAPI returning a server.
++type AuthenticationMethods struct {
++	Password            bool
++	PublicKey           bool
++	KeyboardInteractive bool
++}
++
++// AuthenticationMethodProvider optionally declares a connection handler's
++// capabilities, without making authentication requests. Overlays must forward
++// this contract or report the capabilities of their composed handler.
++// Handlers without this interface retain the legacy three-callback behavior.
++type AuthenticationMethodProvider interface {
++	AuthenticationMethods() AuthenticationMethods
++}
++
++// AuthenticationMethodsFor returns explicit capabilities when provided, or the
++// legacy set for existing handlers. This keeps custom backend passthrough
++// handlers compatible without assuming that a missing declaration disables them.
++func AuthenticationMethodsFor(handler NetworkConnectionHandler) AuthenticationMethods {
++	if provider, ok := handler.(AuthenticationMethodProvider); ok {
++		return provider.AuthenticationMethods()
++	}
++	return AuthenticationMethods{Password: true, PublicKey: true, KeyboardInteractive: true}
++}
+diff --git a/internal/sshserver/serverImpl.go b/internal/sshserver/serverImpl.go
+index 3ef96ce..717868b 100644
+--- a/internal/sshserver/serverImpl.go
++++ b/internal/sshserver/serverImpl.go
+@@ -374,9 +374,19 @@ func (s *serverImpl) createAuthenticators(
+ 	func(conn ssh.ConnMetadata, challenge ssh.KeyboardInteractiveChallenge) (*ssh.Permissions, error),
+ 	*ssh.GSSAPIWithMICConfig,
+ ) {
+-	passwordCallback := s.createPasswordCallback(meta, handlerNetworkConnection, logger)
+-	pubkeyCallback := s.createPubKeyCallback(meta, handlerNetworkConnection, logger)
+-	keyboardInteractiveCallback := s.createKeyboardInteractiveCallback(meta, handlerNetworkConnection, logger)
++	methods := AuthenticationMethodsFor(handlerNetworkConnection.NetworkConnectionHandler)
++	var passwordCallback func(ssh.ConnMetadata, []byte) (*ssh.Permissions, error)
++	var pubkeyCallback func(ssh.ConnMetadata, ssh.PublicKey) (*ssh.Permissions, error)
++	var keyboardInteractiveCallback func(ssh.ConnMetadata, ssh.KeyboardInteractiveChallenge) (*ssh.Permissions, error)
++	if methods.Password {
++		passwordCallback = s.createPasswordCallback(meta, handlerNetworkConnection, logger)
++	}
++	if methods.PublicKey {
++		pubkeyCallback = s.createPubKeyCallback(meta, handlerNetworkConnection, logger)
++	}
++	if methods.KeyboardInteractive {
++		keyboardInteractiveCallback = s.createKeyboardInteractiveCallback(meta, handlerNetworkConnection, logger)
++	}
+ 	gssConfig := s.createGSSAPIConfig(meta, handlerNetworkConnection, logger)
+ 	return passwordCallback, pubkeyCallback, keyboardInteractiveCallback, gssConfig
+ }
