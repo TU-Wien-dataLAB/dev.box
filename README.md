@@ -12,5 +12,3 @@ Why?
 1. Secure sandbox that is not your laptop.
 2. Connect from different devices to the same session.
 3. Manage long running agentic tasks.
-
-Operators: [build, verify, and roll out the SSH authentication-advertisement fix](containerssh-server/README.md).
