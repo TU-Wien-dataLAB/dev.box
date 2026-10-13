@@ -23,11 +23,30 @@ Reference docs (both official, version 0.6):
 - Installation in Kubernetes: https://containerssh.io/v0.6/getting-started/installation/ (Kubernetes tab)
 - Kubernetes backend reference: https://containerssh.io/v0.6/reference/kubernetes/
 
-Source of truth for ContainerSSH internals: `/Users/matthiasmatt/Documents/Work/oss/ContainerSSH`
-(this repo is checked out next to dev.box and is frequently used to verify behavior).
+Source of truth for ContainerSSH internals: our fork
+[`TU-Wien-dataLAB/ContainerSSH`](https://github.com/TU-Wien-dataLAB/ContainerSSH).
+The reference checkout at `/Users/matthiasmatt/Documents/Work/oss/ContainerSSH`
+is for inspecting behavior; source changes use the worktree workflow below.
 
 > Repo: `git@github.com:TU-Wien-dataLAB/dev.box.git`. See
 > [Deployment status](#deployment-status) for the live release and verified behavior.
+
+## ContainerSSH fork workflow
+
+- `origin` is **`TU-Wien-dataLAB/ContainerSSH`**; `upstream` is
+  `ContainerSSH/ContainerSSH`. ContainerSSH fixes and their PRs belong to our fork,
+  not upstream and not this `dev.box` repository.
+- **Before editing ContainerSSH source, ask the user to manually create a new
+  worktree in the fork using herdr.** Example: “Please create a new ContainerSSH
+  fork worktree in herdr and share its absolute path and branch name.” Wait for
+  that path, then work there. Use an already-provided worktree; leave the reference
+  checkout unchanged and do not create the worktree automatically.
+- Commit/push the feature branch from the confirmed worktree. Confirm the PR base
+  branch with the user, and explicitly target the fork with
+  `gh pr create --repo TU-Wien-dataLAB/ContainerSSH --base <confirmed-base>`;
+  do not rely on GitHub CLI's automatic fork/upstream selection.
+- Chart/webhook/application changes and deployment evidence stay in `dev.box`.
+  Keep them out of the ContainerSSH source PR; live rollout approval is separate.
 
 ## Layout
 
@@ -276,6 +295,10 @@ representative persistent and non-persistent webhook merges to the real
 approved Settings POC rollout. See [live evidence](tests/settings-live-validation.md)
 for pinned images, checks, and remaining acceptance gates. The revision-19 notes
 below describe the pre-Settings baseline. Ordinary box UID is unchanged.
+The deployed gateway has a confirmed resize-after-exit panic that can break
+port-forwards and strand Settings pods. Fix: [fork PR #11](https://github.com/TU-Wien-dataLAB/ContainerSSH/pull/11)
+(`settings-change` → `deploy`), **not yet merged or deployed**. Existing stranded
+pods require explicit, UID-preconditioned cleanup approval; do not broadly delete.
 
 - Target cluster context: **`container-ssh`** (created; control plane reachable).
   Current default context is `container-ssh` — still pass `--kube-context container-ssh` explicitly
