@@ -2,8 +2,9 @@
 
 Scope: [issue #9](https://github.com/TU-Wien-dataLAB/dev.box/issues/9), not container
 management or completion of parent #7. Use the existing development release only.
-**Status: probes and runbook prepared; no endpoint, rollout, or lifecycle checks
-have been run by this change.** Record each gate as PASS, FAIL, or NOT RUN with
+**Status: revision 20 deployed with user approval on 2026-10-13; selected live
+checks passed. See [the live evidence](settings-live-validation.md) for exact
+coverage and remaining gates.** Record each gate as PASS, FAIL, or NOT RUN with
 evidence. A screenshot or a request timeout is not a security-policy pass.
 
 ## 1. Validate locally, then pause

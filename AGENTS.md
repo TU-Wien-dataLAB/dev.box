@@ -272,6 +272,11 @@ representative persistent and non-persistent webhook merges to the real
 
 ## Deployment status
 
+**Current status (2026-10-13):** revision **20**, chart **0.3.2**, includes the
+approved Settings POC rollout. See [live evidence](tests/settings-live-validation.md)
+for pinned images, checks, and remaining acceptance gates. The revision-19 notes
+below describe the pre-Settings baseline. Ordinary box UID is unchanged.
+
 - Target cluster context: **`container-ssh`** (created; control plane reachable).
   Current default context is `container-ssh` — still pass `--kube-context container-ssh` explicitly
   (helm) / `--context container-ssh` (kubectl).
