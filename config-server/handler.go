@@ -73,6 +73,12 @@ func (h *configHandler) OnConfig(req config.Request) (config.AppConfig, error) {
 	}
 	name := filepath.Base(source)
 	templateName := strings.TrimSuffix(name, filepath.Ext(name))
+	if templateName == "settings" {
+		cfg, err = applySettings(req, cfg)
+		if err != nil {
+			return config.AppConfig{}, err
+		}
+	}
 
 	// Persistent-mode injection is skipped for a template that explicitly
 	// selects a non-persistent mode (a fixed per-user name would break

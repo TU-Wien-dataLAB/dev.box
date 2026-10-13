@@ -184,8 +184,12 @@ kubernetes:
   # With authServer.enabled=true, these names also become an authz allowlist:
   # unknown SSH usernames are rejected immediately instead of config retries.
   # "default" is an ordinary name, used only by `ssh default@host`. Each item is a partial
-  # kubernetes.pod override (mode/metadata/spec/...); everything you leave out
-  # is inherited from `pod` above / the base config.
+  # kubernetes.pod override (mode/shellCommand/metadata/spec); an optional
+  # `security` block overrides the connection security policy (not pod securityContext).
+  # Everything left out is inherited from `pod` above / the base config.
+  # The reserved `settings` application template needs the patched v0.6 gateway,
+  # the settings-tui image, and a rebuilt config-server. See examples/settings-template.yaml
+  # and tests/settings-acceptance.md. Append it to this list; retain existing templates.
   podTemplates:
     # - name: ubuntu
     #   metadata:

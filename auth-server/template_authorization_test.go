@@ -45,6 +45,7 @@ func TestTemplateAuthorizationPolicy(t *testing.T) {
 		{"disabled without bundled config server", nil, "unknown", true},
 		{"empty list denies all", []string{}, "ubuntu", false},
 		{"named template allows different owner", []string{"ubuntu"}, "ubuntu", true},
+		{"settings uses the existing template gate", []string{"ubuntu", "settings"}, "settings", true},
 		{"default is an ordinary name", []string{"default"}, "default", true},
 		{"empty username denied", []string{"ubuntu"}, "", false},
 		{"no normalization aliases", []string{"ubuntu"}, " ubuntu", false},
@@ -63,18 +64,20 @@ func TestTemplateAuthorizationPolicy(t *testing.T) {
 func TestTemplateAuthorizationPreservesGroupGate(t *testing.T) {
 	alice := userWithKey("alice", newTestKey(t), true)
 	alice.Groups = []authentikGroup{{Name: "ssh-users"}}
-	for _, group := range []string{"ssh-users", "admins"} {
-		t.Run(group, func(t *testing.T) {
-			h := &authHandler{
-				authentik: newMockClient(t, &mockAuthentik{t: t, users: []authentikUser{alice}}),
-				cfg:       authConfig{AllowedTemplates: []string{"ubuntu"}, RequireGroup: group},
-				logger:    testLogger(t),
-			}
-			ok, _, err := h.OnAuthorization(metadata.NewTestAuthenticatingMetadata("ubuntu").Authenticated("alice"))
-			if err != nil || ok != (group == "ssh-users") {
-				t.Fatalf("template must not bypass group policy: ok=%v err=%v", ok, err)
-			}
-		})
+	for _, login := range []string{"ubuntu", "settings"} {
+		for _, group := range []string{"ssh-users", "admins"} {
+			t.Run(login+"/"+group, func(t *testing.T) {
+				h := &authHandler{
+					authentik: newMockClient(t, &mockAuthentik{t: t, users: []authentikUser{alice}}),
+					cfg:       authConfig{AllowedTemplates: []string{"ubuntu", "settings"}, RequireGroup: group},
+					logger:    testLogger(t),
+				}
+				ok, _, err := h.OnAuthorization(metadata.NewTestAuthenticatingMetadata(login).Authenticated("alice"))
+				if err != nil || ok != (group == "ssh-users") {
+					t.Fatalf("template must not bypass group policy: ok=%v err=%v", ok, err)
+				}
+			})
+		}
 	}
 }
 

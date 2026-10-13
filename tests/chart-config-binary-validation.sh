@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Feed rendered and representative webhook-merged configs to the real
-# ContainerSSH v0.6 binary. This catches strict YAML, upstream config-schema,
-# and persistent/non-persistent mode compatibility failures that Helm parsing
-# alone cannot detect.
+# ContainerSSH v0.6 binary for strict parsing/defaulting. The Go merger also
+# calls the actual v0.6 pod/security validators (--dump-config itself does not).
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -30,28 +29,11 @@ render_config() {
     '
 }
 
-# Apply a representative config-webhook pod override to a rendered base. The
-# recursive map merge mirrors the shape relevant here: mode, createMissingPods,
-# metadata.name and labels.
+# Import the actual v0.6 structutils.Merge (nonzero-only mergo.WithOverride),
+# including base defaulting. A Ruby map merge can incorrectly clear true values.
+(cd "$repo_root/tests/config-merge" && go build -o "$tmp/config-merge" .)
 merge_pod_override() {
-  local base="$1"
-  local override="$2"
-  local output="$3"
-  ruby -ryaml -e '
-    def deep_merge!(destination, source)
-      source.each do |key, value|
-        if destination[key].is_a?(Hash) && value.is_a?(Hash)
-          deep_merge!(destination[key], value)
-        else
-          destination[key] = value
-        end
-      end
-    end
-    base = YAML.load_file(ARGV.fetch(0))
-    override = YAML.load_file(ARGV.fetch(1))
-    deep_merge!(base, override)
-    File.write(ARGV.fetch(2), YAML.dump(base))
-  ' "$base" "$override" "$output"
+  "$tmp/config-merge" "$1" "$2" "$3"
 }
 
 validate_config() {
@@ -59,12 +41,16 @@ validate_config() {
   local config="$2"
   local stderr="$tmp/stderr-${label}.log"
 
-  docker run --rm \
+  if ! docker run --rm \
     -v "$config:/etc/containerssh/config.yaml:ro" \
     -v "$tmp/token:/var/run/secrets/kubernetes.io/serviceaccount/token:ro" \
     -v "$tmp/ca.crt:/var/run/secrets/kubernetes.io/serviceaccount/ca.crt:ro" \
     "$image" --config /etc/containerssh/config.yaml --dump-config \
-    >"$tmp/dump-${label}.json" 2>"$stderr"
+    >"$tmp/dump-${label}.json" 2>"$stderr"; then
+    printf 'FAIL %s config validation:\n' "$label" >&2
+    cat "$stderr" "$tmp/dump-${label}.json" >&2
+    return 1
+  fi
 
   if grep -q CORE_CONFIG_ERROR "$stderr"; then
     printf 'FAIL %s config produced CORE_CONFIG_ERROR:\n' "$label" >&2
@@ -78,6 +64,22 @@ validate_config() {
     actual = dump.dig("kubernetes", "pod", "spec", "runtimeClassName")
     abort "ContainerSSH lost runtimeClassName: #{expected.inspect} -> #{actual.inspect}" unless expected == actual
   ' "$config" "$tmp/dump-${label}.json"
+  if [[ "$label" == settings-effective ]]; then
+    ruby -ryaml -e '
+      cfg = YAML.load_file(ARGV[0])
+      pod = cfg.dig("kubernetes", "pod")
+      abort "settings mode/creation incompatible" unless pod["mode"] == "connection" && !pod["createMissingPods"]
+      abort "settings command changed" unless pod["shellCommand"] == ["/usr/local/bin/dev-box-settings"]
+      policy = cfg.fetch("security")
+      abort "force command lost" unless policy["forceCommand"] == "/usr/local/bin/dev-box-settings"
+      abort "default deny lost" unless policy["defaultMode"] == "disable" && policy["maxSessions"] == 1
+      %w[shell tty].each { |k| abort "#{k} permission lost" unless policy.dig(k, "mode") == "enable" }
+      %w[command subsystem env signal].each { |k| abort "#{k} denial lost" unless policy.dig(k, "mode") == "disable" }
+      abort "forwarding denial lost" unless policy.fetch("forwarding").values.all? { |v| v == "disable" }
+      abort "guest token policy lost" unless pod.dig("spec", "automountServiceAccountToken") == false
+      abort "owner plumbing lost" unless pod.dig("spec", "containers", 0, "env").any? { |e| e["name"] == "DEV_BOX_AUTHENTICATED_OWNER" && e["value"] == "alice" }
+    ' "$tmp/dump-${label}.json"
+  fi
   printf 'OK   real ContainerSSH binary accepts %s config and preserves RuntimeClass\n' "$label"
 }
 
@@ -117,3 +119,41 @@ YAML
 merge_pod_override "$tmp/config-persistent-mixed-base.yaml" "$tmp/override-connection-template.yaml" \
   "$tmp/config-connection-template-effective.yaml"
 validate_config connection-template-effective "$tmp/config-connection-template-effective.yaml"
+
+# Render the exact example, then merge its security/execution policy as a
+# representative config-webhook response with a verified owner injected.
+ruby -ryaml -e '
+  template = YAML.load_file(ARGV[0])
+  File.write(ARGV[1], YAML.dump({"kubernetes" => {"podTemplates" => [template]}}))
+' "$chart/examples/settings-template.yaml" "$tmp/settings-values.yaml"
+helm template binary-settings "$chart" --namespace containerssh \
+  --set configServer.enabled=true \
+  --set auth.publicKey.webhook.url=https://auth.example.test \
+  -f "$tmp/settings-values.yaml" >"$tmp/settings-rendered.yaml"
+ruby -ryaml -e '
+  docs = YAML.load_stream(File.read(ARGV[0])).compact
+  base = docs.find { |d| d["kind"] == "ConfigMap" && d.dig("data", "config.yaml") }.dig("data", "config.yaml")
+  templates = docs.find { |d| d["kind"] == "ConfigMap" && d.dig("metadata", "name").end_with?("-templates") }
+  override = YAML.load(templates.dig("data", "settings.yaml"))
+  override.dig("kubernetes", "pod", "spec", "containers")[0]["env"] = [{"name" => "DEV_BOX_AUTHENTICATED_OWNER", "value" => "alice"}]
+  File.write(ARGV[1], base)
+  File.write(ARGV[2], YAML.dump(override))
+' "$tmp/settings-rendered.yaml" "$tmp/settings-base.yaml" "$tmp/settings-override.yaml"
+merge_pod_override "$tmp/settings-base.yaml" "$tmp/settings-override.yaml" "$tmp/settings-effective.yaml"
+validate_config settings-effective "$tmp/settings-effective.yaml"
+merge_pod_override "$tmp/settings-base.yaml" "$tmp/override-persistent.yaml" "$tmp/ordinary-mixed-effective.yaml"
+validate_config ordinary-mixed-effective "$tmp/ordinary-mixed-effective.yaml"
+
+# Regression: a true base createMissingPods cannot be cleared by a false/empty
+# webhook field. Prove the real merger retains it and backend validation fails.
+ruby -ryaml -e '
+  cfg = YAML.load_file(ARGV[0])
+  cfg.dig("kubernetes", "pod")["createMissingPods"] = true
+  File.write(ARGV[1], YAML.dump(cfg))
+' "$tmp/settings-base.yaml" "$tmp/unsafe-base.yaml"
+if merge_pod_override "$tmp/unsafe-base.yaml" "$tmp/settings-override.yaml" "$tmp/unsafe-effective.yaml" >"$tmp/unsafe.log" 2>&1; then
+  printf 'FAIL actual v0.6 validator accepted connection mode with leaked persistent creation\n' >&2
+  exit 1
+fi
+grep -q 'createMissingPods can only be used with persistent execution mode' "$tmp/unsafe.log"
+printf 'OK   actual v0.6 merger retains base true; pod validator rejects unsafe mixed-mode config\n'

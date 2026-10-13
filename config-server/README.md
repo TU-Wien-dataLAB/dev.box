@@ -68,6 +68,23 @@ With `CONTAINERSSH_OPERATING_MODE=persistent` (the bundled chart renders it from
   merge cannot replace a true boolean with false, so request-scoping it in mixed-mode deployments
   keeps those templates valid.
 
+## Settings application template
+
+`settings` is a reserved, opt-in application template (see
+[`settings-template.yaml`](../charts/containerssh/examples/settings-template.yaml)).
+It must select connection mode with one container and no persistent name/owner label.
+The config server injects `DEV_BOX_AUTHENTICATED_OWNER` from the verified
+`authenticatedUsername` into a deep copy of that container's environment, replacing
+any template value. Empty/whitespace-only identities deny; there is no fallback to
+`settings` or client input. Cached templates and concurrent owners remain isolated.
+
+Settings requests skip persistent naming and cap listing, and carry no `dev.box/owner`
+label. Ordinary templates keep their existing identity, labels, cap, and reconnect behavior.
+The named-template renderer also carries `shellCommand` and connection `security`
+overrides. **Stock v0.6 is insufficient for the full policy**; use the
+[patched gateway](../containerssh-settings/README.md) and follow the separately approved
+[acceptance/rollout steps](../tests/settings-acceptance.md).
+
 ## Build & run locally
 
 ```bash

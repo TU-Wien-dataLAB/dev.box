@@ -20,11 +20,31 @@ metadata:
     app.kubernetes.io/component: config-server
 data:
   {{- range $i, $tpl := .Values.kubernetes.podTemplates }}
+  {{- if eq (default "" $tpl.name) "settings" }}
+  {{- $baseSpec := default dict $.Values.kubernetes.pod.spec }}
+  {{- $baseMetadata := default dict $.Values.kubernetes.pod.metadata }}
+  {{- range $key := list "volumes" "initContainers" "ephemeralContainers" "serviceAccountName" "automountServiceAccountToken" "hostNetwork" "hostPID" "hostIPC" "shareProcessNamespace" }}
+  {{- if get $baseSpec $key }}
+  {{- fail (printf "settings cannot inherit kubernetes.pod.spec.%s: partial overrides cannot clear unsafe base fields" $key) }}
+  {{- end }}
+  {{- end }}
+  {{- if or (get $baseMetadata "name") (get (default dict (get $baseMetadata "labels")) "dev.box/owner") }}
+  {{- fail "settings cannot inherit a fixed base pod name or dev.box/owner label" }}
+  {{- end }}
+  {{- end }}
   {{ default (printf "template-%d" $i) $tpl.name }}.yaml: |
+    {{- with $tpl.security }}
+    security:
+{{ toYaml . | indent 6 }}
+    {{- end }}
     kubernetes:
       pod:
     {{- with $tpl.mode }}
         mode: {{ . | quote }}
+    {{- end }}
+    {{- with $tpl.shellCommand }}
+        shellCommand:
+{{ toYaml . | indent 10 }}
     {{- end }}
     {{- with $tpl.metadata }}
         metadata:
