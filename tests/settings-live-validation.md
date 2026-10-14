@@ -1,5 +1,8 @@
 # Settings POC — live deployment evidence
 
+**Historical revision-20 evidence.** Current gateway selection and the
+resize-shutdown retest are in [revision-21 evidence](settings-fork-validation.md).
+
 Status: **deployed and ready for interactive testing**, not full issue #9
 acceptance. User-approved rollout and live checks completed on 2026-10-13.
 Remaining gates are in [the acceptance runbook](settings-acceptance.md).

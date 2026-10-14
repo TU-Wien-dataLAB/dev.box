@@ -47,6 +47,8 @@ def arguments():
     p.add_argument("--session-namespace")
     p.add_argument("--ordinary-pod", help="existing ubuntu pod name; UID must remain unchanged")
     p.add_argument("--settings-selector", help="verified settings-only pod label selector, not an owner selector")
+    p.add_argument("--resize-exit-stress", action="store_true",
+                   help="opt-in resize/quit race checks; can crash unfixed gateways, requires live approval")
     a = p.parse_args()
     if not 1 <= a.port <= 65535 or not 0 < a.timeout <= 300 or not 0 < a.max_total_seconds <= 7200:
         p.error("port must be 1..65535; timeout 0..300 and total bound 0..7200 seconds (exclusive zero)")
@@ -145,6 +147,18 @@ def main():
             for field_type, value in fields:
                 getattr(m, f"add_{field_type}")(value)
             self.exchange(m, ch.chanid, label or kind, expected)
+
+        def resize_during_exit(self, ch, width, height):
+            # Real terminals can resize while the app exits. No reply is required
+            # for this lifecycle stress packet; it is NOT policy-denial evidence.
+            m = Message()
+            m.add_byte(cMSG_CHANNEL_REQUEST)
+            m.add_int(ch.remote_chanid)
+            m.add_string("window-change")
+            m.add_boolean(False)
+            for value in (width, height, 0, 0):
+                m.add_int(value)
+            self._send_user_message(m)
 
         def global_probe(self, kind, fields):
             m = Message()
@@ -351,6 +365,29 @@ def main():
             if uid:
                 cleanup(uid)
                 previous = uid
+
+        if a.resize_exit_stress:
+            for attempt in range(4):
+                with connection() as t:
+                    ch = screen(t, a.owner)
+                    uid = observe_new(baseline) if a.kube_context else None
+                    ch.sendall(b"q")
+                    sent = 0
+                    for index in range(32):
+                        if ch.closed:
+                            break
+                        t.resize_during_exit(ch, 40 if index % 2 else 80, 12 if index % 2 else 24)
+                        sent += 1
+                        time.sleep(min(0.002, bound()))
+                    require(sent > 0, "resize/exit stress: channel closed before any resize was sent; inconclusive")
+                    closed(ch, f"resize/exit stress {attempt + 1}: q")
+                    require(t.is_active(), "resize/exit stress: parent transport died")
+                    denied_open(t, "session", "resize/exit stress: parent still replies", accepted_codes=(4,))
+                    passed(f"resize/exit stress {attempt + 1}: {sent} resize packets, parent healthy")
+                if uid:
+                    cleanup(uid)
+        else:
+            print("NOT RUN: resize/exit stress (supply --resize-exit-stress after approval)", flush=True)
 
         for label, prefix in (("typed shell commands", b""), ("escape", b"\x1b"),
                               ("Ctrl-C", b"\x03"), ("Ctrl-Z suspend", b"\x1a")):

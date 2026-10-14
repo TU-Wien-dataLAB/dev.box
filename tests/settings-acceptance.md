@@ -2,9 +2,10 @@
 
 Scope: [issue #9](https://github.com/TU-Wien-dataLAB/dev.box/issues/9), not container
 management or completion of parent #7. Use the existing development release only.
-**Status: revision 20 deployed with user approval on 2026-10-13; selected live
-checks passed. See [the live evidence](settings-live-validation.md) for exact
-coverage and remaining gates.** Record each gate as PASS, FAIL, or NOT RUN with
+**Status: revision 21 uses the user-approved fork PR #11 image (2026-10-14),
+including the resize-shutdown fix and four required Settings fixes. See
+[the current live evidence](settings-fork-validation.md) for exact coverage,
+retained old pods, and remaining gates.** Record each gate as PASS, FAIL, or NOT RUN with
 evidence. A screenshot or a request timeout is not a security-policy pass.
 
 ## 1. Validate locally, then pause
@@ -136,6 +137,13 @@ For read-only Kubernetes observations, add **all** of:
 --ordinary-pod EXISTING_UBUNTU_POD_NAME
 --settings-selector VERIFIED_SETTINGS_ONLY_LABEL_SELECTOR
 ```
+
+For a separately approved resize/exit regression, add `--resize-exit-stress`.
+It sends a bounded burst of no-reply window changes around `q`, then requires
+exit 0, a healthy parent replying to the session-limit probe, fresh reconnects,
+and (with observations) pod cleanup. These no-reply packets are lifecycle stress,
+**not policy-denial evidence**. Check gateway restart counts before/after as well;
+this option can crash gateways without the resize-queue shutdown fix.
 
 The observer only runs `kubectl get`; it prints selected pod names, UIDs, images
 and imageIDs, not full specs/env/credentials. It requires the existing ordinary

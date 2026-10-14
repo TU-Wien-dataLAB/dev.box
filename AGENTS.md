@@ -291,14 +291,16 @@ representative persistent and non-persistent webhook merges to the real
 
 ## Deployment status
 
-**Current status (2026-10-13):** revision **20**, chart **0.3.2**, includes the
-approved Settings POC rollout. See [live evidence](tests/settings-live-validation.md)
-for pinned images, checks, and remaining acceptance gates. The revision-19 notes
-below describe the pre-Settings baseline. Ordinary box UID is unchanged.
-The deployed gateway has a confirmed resize-after-exit panic that can break
-port-forwards and strand Settings pods. Fix: [fork PR #11](https://github.com/TU-Wien-dataLAB/ContainerSSH/pull/11)
-(`settings-change` → `deploy`), **not yet merged or deployed**. Existing stranded
-pods require explicit, UID-preconditioned cleanup approval; do not broadly delete.
+**Current status (2026-10-14):** revision **21**, chart **0.3.2**, runs the approved
+[fork PR #11](https://github.com/TU-Wien-dataLAB/ContainerSSH/pull/11) test image,
+`ghcr.io/tu-wien-datalab/containerssh:pr-11@sha256:529a4f5618be89a56e3714fe9f77cf886a6674131e0cec5f5f1b28841d92beb9`.
+The PR (`settings-change` → `deploy`) is **not merged**, but all five gateway fixes
+are deployed for testing. See [revision-21 evidence](tests/settings-fork-validation.md):
+112 quit/resize stress requests, zero gateway restarts, fresh-pod cleanup, real
+OpenSSH checks, and unchanged ordinary box UID. Two old Settings pods stranded by
+the revision-20 crash remain; deletion needs explicit, UID-preconditioned approval.
+The revision-19 notes below describe the pre-Settings baseline; the
+[revision-20 report](tests/settings-live-validation.md) is historical.
 
 - Target cluster context: **`container-ssh`** (created; control plane reachable).
   Current default context is `container-ssh` — still pass `--kube-context container-ssh` explicitly
