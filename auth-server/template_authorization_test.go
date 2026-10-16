@@ -9,14 +9,13 @@ import (
 	"strings"
 	"testing"
 
-	authWebhook "go.containerssh.io/containerssh/auth/webhook"
 	"go.containerssh.io/containerssh/metadata"
 )
 
 func TestUnknownTemplateAuthorizationIsCleanDenial(t *testing.T) {
 	logger := testLogger(t)
 	h := &authHandler{cfg: authConfig{AllowedTemplates: []string{"ubuntu", "default"}}, logger: logger}
-	handler := authWebhook.NewHandler(h, logger)
+	handler := newWebhookHandler(h, logger)
 	req := httptest.NewRequest(http.MethodPost, "/authz", strings.NewReader(`{"username":"unknown","authenticatedUsername":"alice","connectionId":"template-test","remoteAddress":"127.0.0.1:43210"}`))
 	req.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
@@ -53,9 +52,12 @@ func TestTemplateAuthorizationPolicy(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			h := &authHandler{cfg: authConfig{AllowedTemplates: test.allowed}, logger: testLogger(t)}
 			meta := metadata.NewTestAuthenticatingMetadata(test.username).Authenticated("alice")
-			ok, returned, err := h.OnAuthorization(meta)
-			if err != nil || ok != test.want || returned.AuthenticatedUsername != "alice" {
-				t.Fatalf("authorization ok=%v owner=%q err=%v; want ok=%v and owner alice", ok, returned.AuthenticatedUsername, err, test.want)
+			decision, err := h.OnAuthorization(meta)
+			if err != nil || decision.success != test.want || decision.meta.AuthenticatedUsername != "alice" {
+				t.Fatalf("authorization success=%v owner=%q err=%v; want success=%v and owner alice", decision.success, decision.meta.AuthenticatedUsername, err, test.want)
+			}
+			if (decision.message == "") != test.want {
+				t.Fatalf("denial must carry a user-facing message: username=%q message=%q", test.username, decision.message)
 			}
 		})
 	}
@@ -72,9 +74,9 @@ func TestTemplateAuthorizationPreservesGroupGate(t *testing.T) {
 					cfg:       authConfig{AllowedTemplates: []string{"ubuntu", "settings"}, RequireGroup: group},
 					logger:    testLogger(t),
 				}
-				ok, _, err := h.OnAuthorization(metadata.NewTestAuthenticatingMetadata(login).Authenticated("alice"))
-				if err != nil || ok != (group == "ssh-users") {
-					t.Fatalf("template must not bypass group policy: ok=%v err=%v", ok, err)
+				decision, err := h.OnAuthorization(metadata.NewTestAuthenticatingMetadata(login).Authenticated("alice"))
+				if err != nil || decision.success != (group == "ssh-users") {
+					t.Fatalf("template must not bypass group policy: success=%v err=%v", decision.success, err)
 				}
 			})
 		}

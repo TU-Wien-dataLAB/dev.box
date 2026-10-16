@@ -27,7 +27,6 @@ import (
 	"syscall"
 	"time"
 
-	authWebhook "go.containerssh.io/containerssh/auth/webhook"
 	"go.containerssh.io/containerssh/config"
 	containersshHTTP "go.containerssh.io/containerssh/http"
 	"go.containerssh.io/containerssh/log"
@@ -95,7 +94,10 @@ func main() {
 	}
 
 	// ---- server + service lifecycle --------------------------------------
-	handler := authWebhook.NewHandler(
+	// Local webhook handler (webhook.go): like the stock auth/webhook package,
+	// but policy denials can carry a user-facing message that the fork gateway
+	// delivers to the SSH client as an authentication banner.
+	handler := newWebhookHandler(
 		&authHandler{authentik: authentikClient, cfg: authCfg, logger: logger},
 		logger,
 	)

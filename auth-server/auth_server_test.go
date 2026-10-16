@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -275,45 +276,69 @@ func TestOnPubKey(t *testing.T) {
 
 	t.Run("valid key succeeds as owner", func(t *testing.T) {
 		handler := newHandler(userWithKey("alice", aliceKey, true))
-		ok, meta, err := handler.OnPubKey(
+		decision, err := handler.OnPubKey(
 			metadata.NewTestAuthenticatingMetadata("pod-template"),
 			auth.PublicKey{PublicKey: aliceKey},
 		)
-		if err != nil || !ok || meta.AuthenticatedUsername != "alice" {
-			t.Fatalf("expected alice, got ok=%v owner=%q err=%v", ok, meta.AuthenticatedUsername, err)
+		if err != nil || !decision.success || decision.meta.AuthenticatedUsername != "alice" {
+			t.Fatalf("expected alice, got success=%v owner=%q err=%v", decision.success, decision.meta.AuthenticatedUsername, err)
+		}
+		if decision.message != "" {
+			t.Fatalf("success must not carry a denial message, got %q", decision.message)
 		}
 	})
 
-	t.Run("key not enrolled is denied", func(t *testing.T) {
+	t.Run("key not enrolled is denied with a user-facing message", func(t *testing.T) {
 		handler := newHandler(userWithKey("alice", aliceKey, true))
-		ok, _, err := handler.OnPubKey(
+		decision, err := handler.OnPubKey(
 			metadata.NewTestAuthenticatingMetadata("pod-template"),
 			auth.PublicKey{PublicKey: bobKey},
 		)
-		if ok || err != nil {
-			t.Fatalf("expected clean denial, got ok=%v err=%v", ok, err)
+		if decision.success || err != nil {
+			t.Fatalf("expected clean denial, got success=%v err=%v", decision.success, err)
+		}
+		if decision.message != "public key is not enrolled for any user\n" {
+			t.Fatalf("unexpected denial message %q", decision.message)
 		}
 	})
 
 	t.Run("requested username does not replace authenticated owner", func(t *testing.T) {
 		handler := newHandler(userWithKey("alice", aliceKey, true))
-		ok, meta, err := handler.OnPubKey(
+		decision, err := handler.OnPubKey(
 			metadata.NewTestAuthenticatingMetadata("ubuntu"),
 			auth.PublicKey{PublicKey: aliceKey},
 		)
-		if err != nil || !ok || meta.AuthenticatedUsername != "alice" {
-			t.Fatalf("expected alice owner, got ok=%v owner=%q err=%v", ok, meta.AuthenticatedUsername, err)
+		if err != nil || !decision.success || decision.meta.AuthenticatedUsername != "alice" {
+			t.Fatalf("expected alice owner, got success=%v owner=%q err=%v", decision.success, decision.meta.AuthenticatedUsername, err)
 		}
 	})
 
-	t.Run("inactive owner is denied", func(t *testing.T) {
+	t.Run("inactive owner is denied with a user-facing message", func(t *testing.T) {
 		handler := newHandler(userWithKey("alice", aliceKey, false))
-		ok, _, err := handler.OnPubKey(
+		decision, err := handler.OnPubKey(
 			metadata.NewTestAuthenticatingMetadata("pod-template"),
 			auth.PublicKey{PublicKey: aliceKey},
 		)
-		if ok || err != nil {
-			t.Fatalf("expected inactive-user denial, got ok=%v err=%v", ok, err)
+		if decision.success || err != nil {
+			t.Fatalf("expected inactive-user denial, got success=%v err=%v", decision.success, err)
+		}
+		if decision.message != "the account owning this key is inactive\n" {
+			t.Fatalf("unexpected denial message %q", decision.message)
+		}
+	})
+
+	t.Run("authentik failure denies without a user-facing message", func(t *testing.T) {
+		mock := &mockAuthentik{t: t, statusCode: http.StatusInternalServerError}
+		handler := &authHandler{authentik: newMockClient(t, mock), logger: testLogger(t)}
+		decision, err := handler.OnPubKey(
+			metadata.NewTestAuthenticatingMetadata("pod-template"),
+			auth.PublicKey{PublicKey: aliceKey},
+		)
+		if decision.success || err == nil {
+			t.Fatalf("expected fail-closed error, got success=%v err=%v", decision.success, err)
+		}
+		if decision.message != "" {
+			t.Fatalf("infrastructure failure must not carry a user-facing message, got %q", decision.message)
 		}
 	})
 }
@@ -333,23 +358,23 @@ func TestOnPubKeyWithKeyAttribute(t *testing.T) {
 	}
 
 	t.Run("exact single-element list authenticates", func(t *testing.T) {
-		ok, meta, err := newHandler([]interface{}{key}).OnPubKey(
+		decision, err := newHandler([]interface{}{key}).OnPubKey(
 			metadata.NewTestAuthenticatingMetadata("pod-template"),
 			auth.PublicKey{PublicKey: key},
 		)
-		if err != nil || !ok || meta.AuthenticatedUsername != "alice" {
-			t.Fatalf("expected alice, got ok=%v owner=%q err=%v", ok, meta.AuthenticatedUsername, err)
+		if err != nil || !decision.success || decision.meta.AuthenticatedUsername != "alice" {
+			t.Fatalf("expected alice, got success=%v owner=%q err=%v", decision.success, decision.meta.AuthenticatedUsername, err)
 		}
 	})
 
 	t.Run("comment is preserved for exact matching", func(t *testing.T) {
 		commented := key + " alice@laptop"
-		ok, _, err := newHandler([]interface{}{commented}).OnPubKey(
+		decision, err := newHandler([]interface{}{commented}).OnPubKey(
 			metadata.NewTestAuthenticatingMetadata("pod-template"),
 			auth.PublicKey{PublicKey: commented},
 		)
-		if err != nil || !ok {
-			t.Fatalf("expected commented exact match, got ok=%v err=%v", ok, err)
+		if err != nil || !decision.success {
+			t.Fatalf("expected commented exact match, got success=%v err=%v", decision.success, err)
 		}
 	})
 }
@@ -368,16 +393,144 @@ func TestOnAuthorizationGroupGate(t *testing.T) {
 	meta := metadata.NewTestAuthenticatingMetadata("pod-template").Authenticated("alice")
 
 	t.Run("member of the required group is allowed", func(t *testing.T) {
-		ok, _, err := newHandler("ssh-users").OnAuthorization(meta)
-		if err != nil || !ok {
-			t.Fatalf("expected group allow, got ok=%v err=%v", ok, err)
+		decision, err := newHandler("ssh-users").OnAuthorization(meta)
+		if err != nil || !decision.success {
+			t.Fatalf("expected group allow, got success=%v err=%v", decision.success, err)
+		}
+		if decision.message != "" {
+			t.Fatalf("success must not carry a denial message, got %q", decision.message)
 		}
 	})
 
-	t.Run("non-member is denied", func(t *testing.T) {
-		ok, _, err := newHandler("admins").OnAuthorization(meta)
-		if ok || err != nil {
-			t.Fatalf("expected group deny, got ok=%v err=%v", ok, err)
+	t.Run("non-member is denied with a user-facing message", func(t *testing.T) {
+		decision, err := newHandler("admins").OnAuthorization(meta)
+		if decision.success || err != nil {
+			t.Fatalf("expected group deny, got success=%v err=%v", decision.success, err)
+		}
+		if decision.message != "user 'alice' is not a member of the required group 'admins'\n" {
+			t.Fatalf("unexpected denial message %q", decision.message)
+		}
+	})
+}
+
+// postWebhook posts a JSON request body to the webhook endpoint and returns the
+// status code and the decoded response body.
+func postWebhook(t *testing.T, serverURL, endpoint, body string) (int, authResponseBody) {
+	t.Helper()
+	response, err := http.Post(serverURL+"/"+endpoint, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /%s: %v", endpoint, err)
+	}
+	defer response.Body.Close()
+	var decoded authResponseBody
+	if err := json.NewDecoder(response.Body).Decode(&decoded); err != nil {
+		t.Fatalf("decode /%s response: %v", endpoint, err)
+	}
+	return response.StatusCode, decoded
+}
+
+// TestWebhookUserFacingMessages verifies the wire contract the fork gateway
+// (PR #10) relies on: policy denials are HTTP 200 and carry the user-facing
+// message; infrastructure failures are HTTP 500 without one; successes are
+// HTTP 200 without one.
+func TestWebhookUserFacingMessages(t *testing.T) {
+	enrolledKey := newTestKey(t)
+	mock := &mockAuthentik{t: t, users: []authentikUser{userWithKey("alice", enrolledKey, true)}}
+	server := httptest.NewServer(newWebhookHandler(&authHandler{
+		authentik: newMockClient(t, mock),
+		cfg:       authConfig{AllowedTemplates: []string{"ubuntu"}},
+		logger:    testLogger(t),
+	}, testLogger(t)))
+	defer server.Close()
+
+	t.Run("pubkey denial carries the enrollment message", func(t *testing.T) {
+		status, body := postWebhook(t, server.URL, "pubkey",
+			`{"username":"pod-template","publicKey":"ssh-ed25519 unknown"}`)
+		if status != http.StatusOK {
+			t.Fatalf("expected HTTP 200 for a policy denial, got %d", status)
+		}
+		if body.Success {
+			t.Fatal("expected denial")
+		}
+		if body.Message != "public key is not enrolled for any user\n" {
+			t.Fatalf("unexpected message %q", body.Message)
+		}
+	})
+
+	t.Run("pubkey success has no message", func(t *testing.T) {
+		status, body := postWebhook(t, server.URL, "pubkey",
+			fmt.Sprintf(`{"username":"ubuntu","publicKey":%q}`, enrolledKey))
+		if status != http.StatusOK || !body.Success {
+			t.Fatalf("expected success, got status=%d success=%v", status, body.Success)
+		}
+		if body.Message != "" {
+			t.Fatalf("success must not carry a message, got %q", body.Message)
+		}
+		if body.AuthenticatedUsername != "alice" {
+			t.Fatalf("expected owner alice, got %q", body.AuthenticatedUsername)
+		}
+	})
+
+	t.Run("unknown template denial carries the template message", func(t *testing.T) {
+		status, body := postWebhook(t, server.URL, "authz",
+			`{"username":"unknown-template","authenticatedUsername":"alice"}`)
+		if status != http.StatusOK {
+			t.Fatalf("expected HTTP 200 for a policy denial, got %d", status)
+		}
+		if body.Success {
+			t.Fatal("expected denial")
+		}
+		if body.Message != "no pod template matches SSH username 'unknown-template'\n" {
+			t.Fatalf("unexpected message %q", body.Message)
+		}
+	})
+
+	t.Run("allowed template authorizes without a message", func(t *testing.T) {
+		status, body := postWebhook(t, server.URL, "authz",
+			`{"username":"ubuntu","authenticatedUsername":"alice"}`)
+		if status != http.StatusOK || !body.Success {
+			t.Fatalf("expected success, got status=%d success=%v", status, body.Success)
+		}
+		if body.Message != "" {
+			t.Fatalf("success must not carry a message, got %q", body.Message)
+		}
+	})
+
+	t.Run("password denial carries the not-supported message", func(t *testing.T) {
+		status, body := postWebhook(t, server.URL, "password",
+			`{"username":"ubuntu","passwordBase64":"cGFzcw=="}`)
+		if status != http.StatusOK || body.Success {
+			t.Fatalf("expected denial, got status=%d success=%v", status, body.Success)
+		}
+		if body.Message != "password authentication is not supported; use public key authentication\n" {
+			t.Fatalf("unexpected message %q", body.Message)
+		}
+	})
+
+	t.Run("authentik outage is HTTP 500 without a message", func(t *testing.T) {
+		mock.statusCode = http.StatusInternalServerError
+		defer func() { mock.statusCode = 0 }()
+		status, body := postWebhook(t, server.URL, "pubkey",
+			fmt.Sprintf(`{"username":"ubuntu","publicKey":%q}`, enrolledKey))
+		if status != http.StatusInternalServerError {
+			t.Fatalf("expected HTTP 500 for an infrastructure failure, got %d", status)
+		}
+		if body.Success {
+			t.Fatal("expected fail-closed denial")
+		}
+		if body.Message != "" {
+			t.Fatalf("infrastructure failure must not carry a message, got %q", body.Message)
+		}
+	})
+
+	t.Run("unknown paths answer 404", func(t *testing.T) {
+		response, err := http.Post(server.URL+"/config", "application/json", strings.NewReader("{}"))
+		if err != nil {
+			t.Fatalf("POST /config: %v", err)
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusNotFound {
+			t.Fatalf("expected 404 for unknown path, got %d", response.StatusCode)
 		}
 	})
 }

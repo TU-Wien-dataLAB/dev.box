@@ -31,6 +31,37 @@ type authConfig struct {
 	AllowedTemplates []string
 }
 
+// authDecision is the outcome of an authentication or authorization check.
+//
+// A policy denial may carry a user-facing message. ContainerSSH (fork PR #10)
+// delivers that message to the connecting SSH client as a user authentication
+// banner (RFC 4252, section 5.4) immediately before the authentication failure.
+// Messages must never contain secrets. Infrastructure errors are not policy
+// denials: they fail closed over HTTP 500 (see webhook.go) and must never
+// produce a message.
+type authDecision struct {
+	success bool
+	meta    metadata.ConnectionAuthenticatedMetadata
+	// message is the user-facing denial message; empty on success.
+	message string
+}
+
+// allow is a successful decision for meta.
+func allow(meta metadata.ConnectionAuthenticatedMetadata) authDecision {
+	return authDecision{success: true, meta: meta}
+}
+
+// deny is a policy denial for meta carrying a user-facing message.
+func deny(meta metadata.ConnectionAuthenticatedMetadata, userMessage string) authDecision {
+	return authDecision{meta: meta, message: userMessage}
+}
+
+// deny is followed by a newline so the banner renders on its own line above
+// the client's final "Permission denied" error.
+func userDenial(format string, args ...interface{}) string {
+	return fmt.Sprintf(format, args...) + "\n"
+}
+
 // authHandler implements ContainerSSH's required authentication interface.
 // Only public-key authentication can succeed.
 type authHandler struct {
@@ -43,14 +74,17 @@ type authHandler struct {
 func (h *authHandler) OnPassword(
 	meta metadata.ConnectionAuthPendingMetadata,
 	_ []byte,
-) (bool, metadata.ConnectionAuthenticatedMetadata, error) {
+) (authDecision, error) {
 	h.logger.WithLabel("username", message.LabelValue(meta.Username)).
 		Debug(message.NewMessage(
 			logCodePassDenied,
 			"Password authentication denied for user %s",
 			meta.Username,
 		))
-	return false, meta.AuthFailed(), nil
+	return deny(
+		meta.AuthFailed(),
+		userDenial("password authentication is not supported; use public key authentication"),
+	), nil
 }
 
 // OnPubKey performs one exact authentik lookup for the public-key string
@@ -58,7 +92,7 @@ func (h *authHandler) OnPassword(
 func (h *authHandler) OnPubKey(
 	meta metadata.ConnectionAuthPendingMetadata,
 	publicKey auth.PublicKey,
-) (bool, metadata.ConnectionAuthenticatedMetadata, error) {
+) (authDecision, error) {
 	start := time.Now()
 	user, err := h.authentik.lookupUser(context.Background(), publicKey.PublicKey)
 	durationMs := time.Since(start).Milliseconds()
@@ -70,7 +104,7 @@ func (h *authHandler) OnPubKey(
 				"Public key authentication failed for %s: authentik lookup error: %v",
 				meta.Username, err,
 			))
-		return false, meta.AuthFailed(), err
+		return authDecision{meta: meta.AuthFailed()}, err
 	}
 	if user == nil {
 		h.logger.WithLabel("username", message.LabelValue(meta.Username)).
@@ -80,7 +114,10 @@ func (h *authHandler) OnPubKey(
 				"Public key authentication denied for %s: key is not uniquely enrolled in authentik",
 				meta.Username,
 			))
-		return false, meta.AuthFailed(), nil
+		return deny(
+			meta.AuthFailed(),
+			userDenial("public key is not enrolled for any user"),
+		), nil
 	}
 	if !user.IsActive {
 		h.logger.WithLabel("username", message.LabelValue(meta.Username)).
@@ -90,7 +127,10 @@ func (h *authHandler) OnPubKey(
 				"Public key authentication denied for %s: owner account %s is inactive",
 				meta.Username, user.Username,
 			))
-		return false, meta.AuthFailed(), nil
+		return deny(
+			meta.AuthFailed(),
+			userDenial("the account owning this key is inactive"),
+		), nil
 	}
 
 	h.logger.WithLabel("username", message.LabelValue(meta.Username)).
@@ -103,16 +143,17 @@ func (h *authHandler) OnPubKey(
 		))
 	// The SSH username selects the pod template; authenticated metadata records
 	// the verified authentik owner.
-	return true, meta.Authenticated(user.Username), nil
+	return allow(meta.Authenticated(user.Username)), nil
 }
 
 // OnAuthorization runs after a successful authentication. Template denials are
 // ordinary authz failures, not webhook errors: ContainerSSH rejects immediately
-// instead of retrying config requests until its timeout. The optional group gate
-// still applies to allowed templates.
+// instead of retrying config requests until its timeout. The denial carries a
+// user-facing message the client sees as an authentication banner. The optional
+// group gate still applies to allowed templates.
 func (h *authHandler) OnAuthorization(
 	meta metadata.ConnectionAuthenticatedMetadata,
-) (bool, metadata.ConnectionAuthenticatedMetadata, error) {
+) (authDecision, error) {
 	if h.cfg.AllowedTemplates != nil && !slices.Contains(h.cfg.AllowedTemplates, string(meta.Username)) {
 		h.logger.WithLabel("username", message.LabelValue(meta.Username)).
 			Info(message.NewMessage(
@@ -120,10 +161,10 @@ func (h *authHandler) OnAuthorization(
 				"Authorization denied: no pod template matches SSH username %s",
 				meta.Username,
 			))
-		return false, meta, nil
+		return deny(meta, userDenial("no pod template matches SSH username '%s'", meta.Username)), nil
 	}
 	if h.cfg.RequireGroup == "" {
-		return true, meta, nil
+		return allow(meta), nil
 	}
 	member, err := h.authentik.userInGroup(context.Background(), meta.AuthenticatedUsername, h.cfg.RequireGroup)
 	if err != nil {
@@ -133,7 +174,7 @@ func (h *authHandler) OnAuthorization(
 				"Authorization failed for %s: group lookup error: %v",
 				meta.AuthenticatedUsername, err,
 			))
-		return false, meta, err
+		return authDecision{meta: meta.AuthFailed()}, err
 	}
 	if !member {
 		h.logger.WithLabel("username", message.LabelValue(meta.AuthenticatedUsername)).
@@ -143,7 +184,11 @@ func (h *authHandler) OnAuthorization(
 				"Authorization denied for %s: not a member of group %s",
 				meta.AuthenticatedUsername, h.cfg.RequireGroup,
 			))
-		return false, meta, nil
+		return deny(
+			meta,
+			userDenial("user '%s' is not a member of the required group '%s'",
+				meta.AuthenticatedUsername, h.cfg.RequireGroup),
+		), nil
 	}
-	return true, meta, nil
+	return allow(meta), nil
 }
