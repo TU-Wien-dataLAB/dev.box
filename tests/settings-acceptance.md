@@ -2,11 +2,11 @@
 
 Scope: [issue #9](https://github.com/TU-Wien-dataLAB/dev.box/issues/9), not container
 management or completion of parent #7. Use the existing development release only.
-**Status: revision 21 uses the user-approved fork PR #11 image (2026-10-14),
-including the resize-shutdown fix and four required Settings fixes. See
-[the current live evidence](settings-fork-validation.md) for exact coverage,
-retained old pods, and remaining gates. [Additional checks on 2026-10-16](settings-remaining-validation.md)
-cover abrupt disconnect, actual OpenSSH multiplexing, and deployed webhook contracts.**
+**Status: revision 38 restores the approved fork PR #11 image and original values
+following temporary fixtures (2026-10-16). See [current fixture evidence](settings-fixture-validation.md)
+for image-upgrade, crash/startup, missing-owner SSH and quota results, and
+[earlier checks](settings-remaining-validation.md) for abrupt disconnect and actual
+OpenSSH multiplexing. Distinct real owners and explicitly listed gates remain.**
 Record each gate as PASS, FAIL, or NOT RUN with
 evidence. A screenshot or a request timeout is not a security-policy pass.
 
@@ -224,6 +224,12 @@ and observes cleanup; it never deploys or deletes Kubernetes objects. It disable
 new-connection fallback for the second mux session so refusal cannot silently
 become a different authenticated connection. Retain protocol-level channel-code
 checks from the thin probe; OpenSSH stderr alone does not expose the numeric code.
+
+For temporary image/crash/metadata fixtures, use the
+[fixture guide](settings-fixture/README.md) and preserve the reviewed rollback
+values before changing anything. A missing-owner fixture must route to its explicit
+`/config` path. Verify actual backend/session rejection: successful SSH authentication
+alone does not establish quota or metadata acceptance.
 
 Run the other gates only after approval, with before/during/after evidence and bounded
 waits matching configured backend cleanup. Stop at each failed gate.

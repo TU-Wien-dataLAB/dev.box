@@ -291,16 +291,17 @@ representative persistent and non-persistent webhook merges to the real
 
 ## Deployment status
 
-**Current status (2026-10-14):** revision **21**, chart **0.3.2**, runs the approved
+**Current status (2026-10-16):** revision **38**, chart **0.3.2**, restores the original
+values after approved prototype fixtures. Gateway remains the digest-pinned
 [fork PR #11](https://github.com/TU-Wien-dataLAB/ContainerSSH/pull/11) test image,
 `ghcr.io/tu-wien-datalab/containerssh:pr-11@sha256:529a4f5618be89a56e3714fe9f77cf886a6674131e0cec5f5f1b28841d92beb9`.
-The PR (`settings-change` → `deploy`) is **not merged**, but all five gateway fixes
-are deployed for testing. See [revision-21 evidence](tests/settings-fork-validation.md):
-112 quit/resize stress requests, zero gateway restarts, fresh-pod cleanup, real
-OpenSSH checks, and unchanged ordinary box UID. The two revision-20 crash leftovers
-were already absent before the [2026-10-16 checks](tests/settings-remaining-validation.md);
-those checks performed no pod deletion. Abrupt-client cleanup and actual OpenSSH
-multiplexed lifetime now pass; identity/image/failure/cap fixtures remain outstanding.
+The PR (`settings-change` → `deploy`) is **not merged**. For current acceptance,
+read [fixture evidence](tests/settings-fixture-validation.md): guest-image upgrade,
+TUI crash/startup failure, missing-owner SSH denial, cap boundary, restoration,
+and the final policy/resize run passed; ordinary box UID is unchanged. Temporary
+fixtures are removed. Two real enrolled owners and other explicitly listed
+acceptance gaps remain; issue #9 is open. Earlier [non-disruptive evidence](tests/settings-remaining-validation.md)
+covers abrupt-client and actual OpenSSH master cleanup.
 The revision-19 notes below describe the pre-Settings baseline; the
 [revision-20 report](tests/settings-live-validation.md) is historical.
 

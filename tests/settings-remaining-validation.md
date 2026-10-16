@@ -1,5 +1,8 @@
 # Settings POC — additional acceptance evidence
 
+**Historical pre-fixture evidence.** Later image/failure/quota and missing-owner
+SSH checks, plus restored revision 38, are in [fixture evidence](settings-fixture-validation.md).
+
 Date: **2026-10-16**. Release remains revision **21**, with the digest-pinned fork
 image in [revision-21 evidence](settings-fork-validation.md). Issue #9 remains
 open. No release values, auth records, or existing pods were modified.
