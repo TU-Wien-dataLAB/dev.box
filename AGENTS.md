@@ -297,8 +297,10 @@ representative persistent and non-persistent webhook merges to the real
 The PR (`settings-change` → `deploy`) is **not merged**, but all five gateway fixes
 are deployed for testing. See [revision-21 evidence](tests/settings-fork-validation.md):
 112 quit/resize stress requests, zero gateway restarts, fresh-pod cleanup, real
-OpenSSH checks, and unchanged ordinary box UID. Two old Settings pods stranded by
-the revision-20 crash remain; deletion needs explicit, UID-preconditioned approval.
+OpenSSH checks, and unchanged ordinary box UID. The two revision-20 crash leftovers
+were already absent before the [2026-10-16 checks](tests/settings-remaining-validation.md);
+those checks performed no pod deletion. Abrupt-client cleanup and actual OpenSSH
+multiplexed lifetime now pass; identity/image/failure/cap fixtures remain outstanding.
 The revision-19 notes below describe the pre-Settings baseline; the
 [revision-20 report](tests/settings-live-validation.md) is historical.
 

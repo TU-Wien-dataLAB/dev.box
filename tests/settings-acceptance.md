@@ -5,7 +5,9 @@ management or completion of parent #7. Use the existing development release only
 **Status: revision 21 uses the user-approved fork PR #11 image (2026-10-14),
 including the resize-shutdown fix and four required Settings fixes. See
 [the current live evidence](settings-fork-validation.md) for exact coverage,
-retained old pods, and remaining gates.** Record each gate as PASS, FAIL, or NOT RUN with
+retained old pods, and remaining gates. [Additional checks on 2026-10-16](settings-remaining-validation.md)
+cover abrupt disconnect, actual OpenSSH multiplexing, and deployed webhook contracts.**
+Record each gate as PASS, FAIL, or NOT RUN with
 evidence. A screenshot or a request timeout is not a security-policy pass.
 
 ## 1. Validate locally, then pause
@@ -206,7 +208,24 @@ It does not mark issue #9 accepted or automatically retry failed security checks
 
 ## 4. Complete the remaining staged gates
 
-Run these only after approval, with before/during/after evidence and bounded
+For approved abrupt-disconnect and actual OpenSSH control-master checks, run:
+
+```bash
+python3 tests/ssh-settings-lifecycle.py \
+  --key ~/.ssh/slurm_tu_wien --known-hosts ~/.ssh/known_hosts \
+  --owner CANONICAL_AUTHENTIK_OWNER --kube-context container-ssh \
+  --session-namespace containerssh-sessions --ordinary-pod box-8bbfc143fa \
+  --settings-selector dev.box/application=settings
+```
+
+Confirm that the ordinary pod and selector match the target before running.
+This probe kills only its own local SSH child, closes its own control master,
+and observes cleanup; it never deploys or deletes Kubernetes objects. It disables
+new-connection fallback for the second mux session so refusal cannot silently
+become a different authenticated connection. Retain protocol-level channel-code
+checks from the thin probe; OpenSSH stderr alone does not expose the numeric code.
+
+Run the other gates only after approval, with before/during/after evidence and bounded
 waits matching configured backend cleanup. Stop at each failed gate.
 
 | Gate | Procedure and required evidence |
