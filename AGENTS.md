@@ -136,7 +136,7 @@ ssh ubuntu@dev.box.example.com
 
 | Value | Default | Meaning |
 | --- | --- | --- |
-| `image.repository/tag` | `ghcr.io/tu-wien-datalab/containerssh`, `deploy` | Fork gateway default; live deployments keep immutable digest pins |
+| `image.repository/tag` | digest-pinned fork PR #10 (see values) | Settings fixes plus auth denial banners; overrides require the message patch |
 | `ssh.port` / `service.*` | `2222` / ClusterIP | SSH listener + exposure (NodePort/LB available) |
 | `ingress.enabled` / `ingress.tcp.*` | `false` / `ssh` | Traefik IngressRouteTCP (raw TCP) fronts the SSH port; **no cert-manager/TLS** — SSH is not HTTP |
 | `ssh.hostKey.existingSecret` / `.privateKey` | `""` | stable host key; else ephemeral key fallback |
@@ -326,9 +326,11 @@ Set `CONTAINERSSH_IMAGE` to validate the intended immutable rollout image.
 **Code default versus rollout:** fork [PR #11](https://github.com/TU-Wien-dataLAB/ContainerSSH/pull/11)
 merged `settings-change` → `deploy` on 2026-10-16; deploy-line
 [Docker Image run 38917607974](https://github.com/TU-Wien-dataLAB/ContainerSSH/actions/runs/38917607974)
-succeeded. The chart default is `ghcr.io/tu-wien-datalab/containerssh:deploy`, not a live image
-selection. Existing rollout image pins are independent of chart defaults. Issue #11 migration
-and acceptance require [this staged plan](tests/settings-code-migration.md).
+succeeded. Chart 0.3.3 defaults to the digest-pinned PR #10 gateway in `values.yaml` for auth
+denial banners as well as Settings fixes; PR #10 remains unmerged. Stock v0.6.0 and unpatched
+`deploy` strictly reject the auth `message` field, so overridden gateways must include the patch.
+This default is not a live image selection. Existing rollout image pins are independent of chart
+defaults. Issue #11 migration and acceptance require [this staged plan](tests/settings-code-migration.md).
 
 **Historical revision-38 baseline (2026-10-16):** revision **38**, chart **0.3.2**, restores the original
 values after approved prototype fixtures. Gateway remains the digest-pinned

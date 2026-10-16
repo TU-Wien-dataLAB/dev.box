@@ -48,7 +48,7 @@ ruby -ryaml -rjson -e '
   abort "ordinary template lost Kata" unless ubuntu.dig("kubernetes", "pod", "spec", "runtimeClassName") == "kata-qemu-runtime-rs"
   abort "persistent-only creation leaks" if base.dig("kubernetes", "pod").key?("createMissingPods")
   gateway = docs.find { |d| d["kind"] == "Deployment" && d.dig("metadata", "name") == "settings-containerssh" }
-  abort "default gateway must track the merged fork deploy line" unless gateway.dig("spec", "template", "spec", "containers", 0, "image") == "ghcr.io/tu-wien-datalab/containerssh:deploy"
+  abort "default gateway must support settings and auth denial messages" unless gateway.dig("spec", "template", "spec", "containers", 0, "image") == "ghcr.io/tu-wien-datalab/containerssh:pr-10@sha256:96519c315ae7810931df2c8b5a974750d3f8fb6007c0aad4fa9b2e6b68394a4d"
   auth = docs.find { |d| d["kind"] == "Deployment" && d.dig("metadata", "name").end_with?("-auth-server") }
   policy = auth.dig("spec", "template", "spec", "containers", 0, "env").find { |e| e["name"] == "AUTH_SERVER_ALLOWED_TEMPLATES" }
   abort "settings bypasses exact-name authz gate" unless JSON.parse(policy.fetch("value")) == ["ubuntu", "settings"]

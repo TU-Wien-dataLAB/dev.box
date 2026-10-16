@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -108,6 +109,12 @@ func (c *authentikClient) listUsers(ctx context.Context, values url.Values) (*pa
 
 	resp, err := c.cfg.HTTPClient.Do(req)
 	if err != nil {
+		// net/http wraps transport failures with the full URL, whose query
+		// contains the public key. Only expose the underlying cause to logs.
+		var urlError *url.Error
+		if errors.As(err, &urlError) {
+			err = urlError.Err
+		}
 		return nil, fmt.Errorf("authentik users request failed: %w", err)
 	}
 	defer resp.Body.Close()

@@ -56,13 +56,13 @@ func deny(meta metadata.ConnectionAuthenticatedMetadata, userMessage string) aut
 	return authDecision{meta: meta, message: userMessage}
 }
 
-// deny is followed by a newline so the banner renders on its own line above
+// userDenial appends a newline so the banner renders on its own line above
 // the client's final "Permission denied" error.
 func userDenial(format string, args ...interface{}) string {
 	return fmt.Sprintf(format, args...) + "\n"
 }
 
-// authHandler implements ContainerSSH's required authentication interface.
+// authHandler supplies decisions for the ContainerSSH authentication endpoints.
 // Only public-key authentication can succeed.
 type authHandler struct {
 	authentik *authentikClient
@@ -70,7 +70,7 @@ type authHandler struct {
 	logger    log.Logger
 }
 
-// OnPassword exists because ContainerSSH's handler interface requires it.
+// OnPassword implements the protocol-required password endpoint, always denying.
 func (h *authHandler) OnPassword(
 	meta metadata.ConnectionAuthPendingMetadata,
 	_ []byte,

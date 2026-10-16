@@ -14,7 +14,7 @@ This chart is modeled on the official documentation:
 
 | Resource | Purpose |
 | --- | --- |
-| `Deployment` | Runs the fork gateway `ghcr.io/tu-wien-datalab/containerssh:deploy` (default port **2222**; digest-pin live releases) |
+| `Deployment` | Runs the digest-pinned fork PR #10 gateway with Settings fixes and auth denial banners (default port **2222**) |
 | `ConfigMap` | Renders the ContainerSSH `config.yaml` (Kubernetes backend) from `values.yaml` |
 | `ServiceAccount` | Identity used *by ContainerSSH* to talk to the Kubernetes API (bearer token + in-cluster CA) |
 | `Role` + `RoleBinding` | Least-privilege RBAC that lets the ServiceAccount create/exec/log backend user pods **only** in their namespace (see the "Securing Kubernetes" section of the reference) |
@@ -257,7 +257,7 @@ See `values.yaml` for the complete, annotated list. Highlights:
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `image.repository`, `image.tag` | `ghcr.io/tu-wien-datalab/containerssh`, `deploy` | Fork gateway default, not a live rollout; pin deployed images by digest |
+| `image.repository`, `image.tag` | digest-pinned fork PR #10 (see `values.yaml`) | Settings fixes plus auth denial banners; not a live rollout |
 | `replicaCount` | `1` | Number of SSH server replicas |
 | `ssh.port` | `2222` | SSH listener port |
 | `ssh.hostKey.existingSecret` | `""` | Name of a Secret holding `host.key` (recommended) |
@@ -475,6 +475,12 @@ helm install containerssh . \
 ```
 
 See `auth-server/README.md` for all env knobs and the lookup flow.
+
+The bundled auth server sends policy-denial `message` fields. The default gateway is pinned to
+fork PR #10, which delivers them as SSH banners. PR #10 is not yet merged into `deploy`;
+stock v0.6.0 and that unpatched image reject the field instead of ignoring it, causing retries.
+Gateway overrides must include the patch. Infrastructure failures remain HTTP 500 without a
+user-facing message. Existing releases retain their explicitly configured image pins.
 
 **Caveats:**
 - **Fail-closed**: while an auth webhook URL is set, ContainerSSH *denies* connections when the

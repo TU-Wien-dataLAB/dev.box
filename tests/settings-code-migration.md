@@ -23,8 +23,9 @@ Issue #9 [fixture evidence](settings-fixture-validation.md) is historical, not p
 2. Keep the release's gateway reference pinned. Fork
    [PR #11](https://github.com/TU-Wien-dataLAB/ContainerSSH/pull/11) merged `settings-change` → `deploy`
    on **2026-10-16**, and deploy-line [Docker Image run 38917607974](https://github.com/TU-Wien-dataLAB/ContainerSSH/actions/runs/38917607974)
-   succeeded. The new chart default is `ghcr.io/tu-wien-datalab/containerssh:deploy`; that moving
-   default is **not** an instruction to change an existing deployment's image.
+   succeeded. Chart 0.3.3 pins the PR #10 gateway digest in `charts/containerssh/values.yaml`
+   for both Settings fixes and auth denial banners; unpatched `deploy` rejects the new auth
+   `message` field. The chart default is **not** an instruction to change an existing deployment's image.
    The issue's starting baseline, revision **38**, retained
    `ghcr.io/tu-wien-datalab/containerssh:pr-11@sha256:529a4f5618be89a56e3714fe9f77cf886a6674131e0cec5f5f1b28841d92beb9`.
    Capture the actual approved target before proceeding; preserve its pin rather than restoring

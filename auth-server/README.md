@@ -47,11 +47,14 @@ owner.
 | Path | Meaning |
 | --- | --- |
 | `POST /pubkey` | authentik-backed SSH public-key authentication |
-| `POST /password` | always denied; required only by ContainerSSH's handler interface |
+| `POST /password` | always denied; protocol-required endpoint |
 | `POST /authz` | optional SSH-template allowlist and authentik group gate |
 
-The server uses ContainerSSH's official `auth/webhook` package. Pod configuration is exclusively
-the separate config-server's responsibility.
+The server uses ContainerSSH's wire types with a local HTTP adapter that adds user-facing
+policy-denial messages. The chart pins a message-capable fork gateway (PR #10); overridden gateway
+images must include that patch. Stock v0.6.0 and the unpatched `deploy` image strictly reject the
+`message` field and retry rather than showing a banner. See the [wire contract](spec.md#containerssh-webhook-contract).
+Pod configuration is exclusively the separate config-server's responsibility.
 
 When `AUTH_SERVER_ALLOWED_TEMPLATES` is set, authorization checks the client-chosen SSH username
 against that exact list before applying the group gate. Unknown names return HTTP 200 with
@@ -81,6 +84,12 @@ key, even though ContainerSSH never accepts it. For a prompt noninteractive erro
 go build ./...
 go vet ./...
 go test -race ./...
+```
+
+Built-image auth and SSH banner regression (Docker, Helm, Python 3, OpenSSH; no cluster):
+
+```bash
+python3 tests/auth-server-error-messages.py  # from the repository root
 ```
 
 Run locally:

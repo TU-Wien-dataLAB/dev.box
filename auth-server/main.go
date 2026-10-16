@@ -1,8 +1,8 @@
 // Command auth-server is a ContainerSSH authentication server backed by an
 // authentik [1] instance for SSH public-key lookups.
 //
-// It implements the ContainerSSH auth webhook protocol with the official
-// go.containerssh.io/containerssh/auth/webhook package.
+// It implements the ContainerSSH auth webhook protocol with a local HTTP
+// adapter that adds the fork gateway's user-facing denial messages.
 //
 // The required interface exposes /password, /pubkey, and /authz. Only
 // /pubkey can authenticate; password always denies. Authorization can enforce

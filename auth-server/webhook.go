@@ -16,8 +16,9 @@
 //     auth timeout. Never carries a user-facing message (fail closed).
 //   - Unknown path: 404.
 //
-// A message-less response is JSON-compatible with stock v0.6.0, so this server
-// also works against an unpatched gateway (the message field is ignored).
+// Message-bearing denials require the fork PR #10 gateway. Stock v0.6.0
+// strictly rejects unknown response fields, so it cannot consume these denials.
+// Successes and message-less denials retain the stock wire format.
 package main
 
 import (
@@ -65,7 +66,7 @@ func (h *webhookHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 
 func (h *webhookHandler) servePassword(writer http.ResponseWriter, request *http.Request) {
 	var requestObject auth.PasswordAuthRequest
-	if err := decodeRequest(request, &requestObject); err != nil {
+	if err := json.NewDecoder(request.Body).Decode(&requestObject); err != nil {
 		h.writeDecodeError(writer, "password", err)
 		return
 	}
@@ -80,7 +81,7 @@ func (h *webhookHandler) servePassword(writer http.ResponseWriter, request *http
 
 func (h *webhookHandler) servePubKey(writer http.ResponseWriter, request *http.Request) {
 	var requestObject auth.PublicKeyAuthRequest
-	if err := decodeRequest(request, &requestObject); err != nil {
+	if err := json.NewDecoder(request.Body).Decode(&requestObject); err != nil {
 		h.writeDecodeError(writer, "pubkey", err)
 		return
 	}
@@ -90,16 +91,12 @@ func (h *webhookHandler) servePubKey(writer http.ResponseWriter, request *http.R
 
 func (h *webhookHandler) serveAuthz(writer http.ResponseWriter, request *http.Request) {
 	var requestObject auth.AuthorizationRequest
-	if err := decodeRequest(request, &requestObject); err != nil {
+	if err := json.NewDecoder(request.Body).Decode(&requestObject); err != nil {
 		h.writeDecodeError(writer, "authz", err)
 		return
 	}
 	decision, err := h.handler.OnAuthorization(requestObject.ConnectionAuthenticatedMetadata)
 	h.writeDecision(writer, decision, err)
-}
-
-func decodeRequest(request *http.Request, target interface{}) error {
-	return json.NewDecoder(request.Body).Decode(target)
 }
 
 func (h *webhookHandler) writeDecodeError(writer http.ResponseWriter, endpoint string, err error) {
@@ -111,22 +108,21 @@ func (h *webhookHandler) writeDecodeError(writer http.ResponseWriter, endpoint s
 // error stays a fail-closed HTTP 500 without a message; a policy denial is
 // HTTP 200 with the optional user-facing message.
 func (h *webhookHandler) writeDecision(writer http.ResponseWriter, decision authDecision, err error) {
-	if err != nil {
-		writeResponse(writer, http.StatusInternalServerError, authResponseBody{
-			ResponseBody: auth.ResponseBody{
-				ConnectionAuthenticatedMetadata: decision.meta,
-				Success:                         false,
-			},
-		})
-		return
-	}
-	writeResponse(writer, http.StatusOK, authResponseBody{
+	body := authResponseBody{
 		ResponseBody: auth.ResponseBody{
 			ConnectionAuthenticatedMetadata: decision.meta,
-			Success:                         decision.success,
 		},
-		Message: decision.message,
-	})
+	}
+	status := http.StatusOK
+	if err != nil {
+		status = http.StatusInternalServerError
+	} else {
+		body.Success = decision.success
+		if !decision.success {
+			body.Message = decision.message
+		}
+	}
+	writeResponse(writer, status, body)
 }
 
 func writeResponse(writer http.ResponseWriter, status int, body authResponseBody) {

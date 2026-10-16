@@ -45,25 +45,30 @@ model with an exact-searchable reverse index.
 
 ## ContainerSSH webhook contract
 
-The implementation uses `go.containerssh.io/containerssh/auth/webhook` and implements:
+The local HTTP adapter in `webhook.go` uses ContainerSSH's request/response types and adds
+an optional `message` field to policy denials. The stock v0.6.0 `auth/webhook` handler cannot
+serialize that field. Internal callbacks return an `authDecision` (success, authenticated metadata,
+and denial message) plus an error, rather than implementing the stock SDK handler interface.
 
-```go
-type AuthRequestHandler interface {
-    OnPassword(meta metadata.ConnectionAuthPendingMetadata, password []byte) (
-        bool, metadata.ConnectionAuthenticatedMetadata, error)
-    OnPubKey(meta metadata.ConnectionAuthPendingMetadata, publicKey auth.PublicKey) (
-        bool, metadata.ConnectionAuthenticatedMetadata, error)
-    OnAuthorization(meta metadata.ConnectionAuthenticatedMetadata) (
-        bool, metadata.ConnectionAuthenticatedMetadata, error)
-}
-```
+| Decision | HTTP response |
+| --- | --- |
+| Active, uniquely enrolled owner | 200, `success: true`, authenticated as owner, no `message` |
+| Policy denial | 200, `success: false`, user-facing `message` ending in a newline |
+| Authentik/network failure | 500, `success: false`, no `message` |
+| Malformed request | 500, `success: false`, no `message` |
+| Unknown endpoint | 404 |
 
-For public-key authentication:
+Policy messages cover unsupported passwords, non-unique/absent key enrollment, inactive accounts,
+unknown templates, and missing group membership. They never contain key material, passwords,
+tokens, or infrastructure errors.
 
-- success returns `true` and `meta.Authenticated(owner.Username)`;
-- an authentication miss returns `false`, `meta.AuthFailed()`, and no error;
-- an authentik/network failure returns an error so the webhook responds with HTTP 500 and
-  ContainerSSH fails closed.
+**Gateway compatibility:** message-bearing denials require the fork's
+[PR #10](https://github.com/TU-Wien-dataLAB/ContainerSSH/pull/10), which delivers the message as
+an SSH userauth banner before a terminal authentication failure. The chart pins a published
+PR #10 image in `values.yaml`; this is not a live rollout. Stock v0.6.0 (including the current
+unpatched `deploy` image) strictly rejects unknown JSON fields: it does not ignore `message`,
+and will retry instead of promptly denying. Overridden gateway images must include the patch.
+Successes and message-less responses retain the stock wire format.
 
 ## Public-key decision flow
 
@@ -107,7 +112,7 @@ The same listener exposes the protocol-complete endpoints:
 
 | Endpoint | Behavior |
 | --- | --- |
-| `POST /password` | always deny; present only to satisfy the handler interface |
+| `POST /password` | always deny; protocol-required endpoint |
 | `POST /pubkey` | public-key flow above |
 | `POST /authz` | apply the configured template-name allowlist and authentik group gate; allow if both gates pass or are disabled |
 | other path | `404` |

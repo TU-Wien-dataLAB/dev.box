@@ -1,7 +1,8 @@
-# Fork gateway with the settings execution policy fixes. Pin live releases by digest.
+# Fork gateway with settings execution policy fixes and auth denial banners.
+# PR #10 is not yet merged into deploy; keep this tested digest until it is.
 image:
   repository: ghcr.io/tu-wien-datalab/containerssh
-  tag: "deploy"
+  tag: "pr-10@sha256:96519c315ae7810931df2c8b5a974750d3f8fb6007c0aad4fa9b2e6b68394a4d"
   pullPolicy: IfNotPresent
 
 # Code-owned settings application. Only its image is configurable.
