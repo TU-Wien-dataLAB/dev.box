@@ -1,7 +1,10 @@
 # Settings POC — live deployment evidence
 
-**Historical revision-20 evidence.** Current gateway selection and the
+**Historical revision-20 evidence.** The later revision-21 gateway selection and
 resize-shutdown retest are in [revision-21 evidence](settings-fork-validation.md).
+This values-defined, inherited-Kata, no-token POC does not validate issue #11's
+[synthesized settings/scoped-token contracts](settings-code-migration.md). Recorded observations
+below are unchanged.
 
 Status: **deployed and ready for interactive testing**, not full issue #9
 acceptance. User-approved rollout and live checks completed on 2026-10-13.

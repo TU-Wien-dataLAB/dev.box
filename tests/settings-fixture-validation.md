@@ -1,5 +1,13 @@
 # Settings POC — approved live fixture validation
 
+> **Historical issue #9 / revision-38 evidence.** The values-defined settings item, inherited Kata
+> and no-token floor below precede issue #11. PR status is as recorded at the time: fork PR #11
+> subsequently merged on 2026-10-16; deploy-line Docker Image
+> [run 38917607974](https://github.com/TU-Wien-dataLAB/ContainerSSH/actions/runs/38917607974) succeeded.
+> The merge did not change revision 38's pinned image. Follow
+> [the new migration and staged plan](settings-code-migration.md) for the new contracts;
+> historical evidence below is unchanged.
+
 Date: **2026-10-16**. User approved temporary Settings-image/failure/quota
 fixtures and ContainerSSH-related restarts. Final release: **revision 38**, chart
 `containerssh-0.3.2`, context `container-ssh`, namespace `containerssh`.

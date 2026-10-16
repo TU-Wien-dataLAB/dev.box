@@ -23,11 +23,12 @@ assert_policy() {
         abort "missing template authorization policy" unless policy
         names = JSON.parse(policy.fetch("value"))
         templates = docs.find { |o| o["kind"] == "ConfigMap" && o.dig("metadata", "name").end_with?("-templates") }
-        expected = (templates["data"] || {}).keys.map { |name| name.delete_suffix(".yaml") }
+        expected = (templates["data"] || {}).keys.map { |name| name.delete_suffix(".yaml") } + ["settings"]
         abort "authorization policy does not match rendered template names" unless names.sort == expected.sort
-        abort "wrong named policy" if ARGV[0] == "named" && names != ["ubuntu", "default"]
-        abort "empty template list must deny all" if ARGV[0] == "empty" && names != []
-        abort "implicit template name mismatch" if ARGV[0] == "implicit" && names != ["template-0"]
+        abort "wrong named policy" if ARGV[0] == "named" && names != ["ubuntu", "default", "settings"]
+        abort "empty ordinary list must allow only settings" if ARGV[0] == "empty" && names != ["settings"]
+        abort "implicit template name mismatch" if ARGV[0] == "implicit" && names != ["template-0", "settings"]
+        abort "reserved application duplicated" unless names.count("settings") == 1
       end
     ' "$scenario"
   printf 'OK   template authorization %s\n' "$scenario"

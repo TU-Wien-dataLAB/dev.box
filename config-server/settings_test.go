@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"go.containerssh.io/containerssh/config"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const settingsTemplate = `kubernetes:
@@ -42,6 +43,26 @@ func settingsHandler(t *testing.T) *configHandler {
 	})
 }
 
+func TestSettingsIsSynthesizedWithoutATemplateFile(t *testing.T) {
+	h := settingsHandler(t)
+	h.dir = testTemplateDir(t, map[string]string{"ubuntu.yaml": "{}"})
+	cfg, err := h.OnConfig(configRequest("settings", "alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Security.DefaultMode != config.ExecutionPolicyDisable || cfg.Security.MaxSessions != 1 || cfg.Security.ForceCommand != "/usr/local/bin/dev-box-settings" {
+		t.Fatalf("settings security floor missing: %+v", cfg.Security)
+	}
+	pod := cfg.Kubernetes.Pod
+	if pod.Spec.RuntimeClassName != nil || len(pod.Spec.Containers) != 1 || pod.Spec.Containers[0].Name != "settings" {
+		t.Fatalf("settings is not a single default-runtime application: %+v", pod.Spec)
+	}
+	container := pod.Spec.Containers[0]
+	if container.SecurityContext == nil || !*container.SecurityContext.ReadOnlyRootFilesystem || *container.SecurityContext.AllowPrivilegeEscalation || len(container.SecurityContext.Capabilities.Drop) != 1 || container.SecurityContext.Capabilities.Drop[0] != "ALL" {
+		t.Fatalf("settings container security floor missing: %+v", container.SecurityContext)
+	}
+}
+
 func TestSettingsReceivesVerifiedOwnerWithoutOccupyingPersistentQuota(t *testing.T) {
 	h := settingsHandler(t)
 	cfg, err := h.OnConfig(configRequest("settings", "alice"))
@@ -60,6 +81,39 @@ func TestSettingsReceivesVerifiedOwnerWithoutOccupyingPersistentQuota(t *testing
 	}
 	if len(owners) != 1 || owners[0] != "alice" {
 		t.Fatalf("settings owner = %q, want only verified alice", owners)
+	}
+}
+
+func TestSettingsEnsuresOwnerScopedKubernetesAccess(t *testing.T) {
+	h := settingsHandler(t)
+	cfg, err := h.OnConfig(configRequest("settings", "alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := cfg.Kubernetes.Pod.Spec
+	if spec.ServiceAccountName == "" || spec.AutomountServiceAccountToken == nil || !*spec.AutomountServiceAccountToken {
+		t.Fatal("settings has no per-owner projected token")
+	}
+	ctx := context.Background()
+	ns := h.boxes.namespace
+	if _, err := h.kube.CoreV1().ServiceAccounts(ns).Get(ctx, spec.ServiceAccountName, metav1.GetOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	role, err := h.kube.RbacV1().Roles(ns).Get(ctx, spec.ServiceAccountName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.boxes.pods = &fakeLister{}
+	ordinary, err := h.OnConfig(configRequest("ubuntu", "alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(role.Rules) != 1 || len(role.Rules[0].ResourceNames) != 1 || role.Rules[0].ResourceNames[0] != ordinary.Kubernetes.Pod.Metadata.Name || strings.Join(role.Rules[0].Verbs, ",") != "get,delete" || strings.Join(role.Rules[0].Resources, ",") != "pods" || len(role.Rules[0].APIGroups) != 1 || role.Rules[0].APIGroups[0] != "" {
+		t.Fatalf("unexpected owner authority: %+v", role.Rules)
+	}
+	binding, err := h.kube.RbacV1().RoleBindings(ns).Get(ctx, spec.ServiceAccountName, metav1.GetOptions{})
+	if err != nil || binding.RoleRef.Name != role.Name || len(binding.Subjects) != 1 || binding.Subjects[0].Name != spec.ServiceAccountName || binding.Subjects[0].Namespace != ns || binding.Subjects[0].Kind != "ServiceAccount" {
+		t.Fatalf("unexpected owner binding: %+v, %v", binding, err)
 	}
 }
 
@@ -94,12 +148,16 @@ func TestSettingsOwnersAreIsolatedAcrossConcurrentConnections(t *testing.T) {
 	wg.Wait()
 }
 
-func TestSettingsRejectsPersistentOrIncompleteApplicationTemplate(t *testing.T) {
+func TestSettingsCannotBeOverriddenByATemplateFile(t *testing.T) {
 	for _, template := range []string{"{}", strings.Replace(settingsTemplate, "mode: connection", "mode: persistent", 1), "kubernetes:\n  pod:\n    mode: connection\n"} {
 		h := settingsHandler(t)
 		h.dir = testTemplateDir(t, map[string]string{"settings.yaml": template})
-		if _, err := h.OnConfig(configRequest("settings", "alice")); err == nil {
-			t.Fatal("unsafe settings template was accepted")
+		cfg, err := h.OnConfig(configRequest("settings", "alice"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Kubernetes.Pod.Mode != config.KubernetesExecutionModeConnection || cfg.Kubernetes.Pod.Spec.Containers[0].Image != "settings:test" {
+			t.Fatal("template file overrode reserved application")
 		}
 	}
 }

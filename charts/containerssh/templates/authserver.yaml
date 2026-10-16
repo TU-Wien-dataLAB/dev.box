@@ -80,6 +80,7 @@ spec:
             {{- range $i, $tpl := .Values.kubernetes.podTemplates }}
             {{- $templates = append $templates (default (printf "template-%d" $i) $tpl.name) }}
             {{- end }}
+            {{- $templates = append $templates "settings" }}
             # Reject unknown SSH template names during authz, before the config
             # webhook (whose HTTP errors ContainerSSH retries until timeout).
             - name: AUTH_SERVER_ALLOWED_TEMPLATES

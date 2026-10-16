@@ -1,8 +1,15 @@
-# default: use the containerssh image to run the server
+# Fork gateway with the settings execution policy fixes. Pin live releases by digest.
 image:
-  repository: containerssh/containerssh
-  tag: "v0.6"
+  repository: ghcr.io/tu-wien-datalab/containerssh
+  tag: "deploy"
   pullPolicy: IfNotPresent
+
+# Code-owned settings application. Only its image is configurable.
+# tag accepts an immutable tag, sha256:<digest>, or tag@sha256:<digest>.
+settings:
+  image:
+    repository: ghcr.io/tu-wien-datalab/dev.box/settings-tui
+    tag: sha-4285f7893a1851eecf6eeec177a9964ef6815d3a
 
 replicaCount: 1
 
@@ -78,8 +85,8 @@ networkPolicy:
 
 # Official Kata Containers installer (Helm dependency, aliased as kata).
 # Requires virtualization/KVM on eligible nodes and cluster-admin permissions.
-# Only backend user pods use Kata; the SSH/auth/config servers use the normal runtime.
-# Disable both installation and the automatic backend RuntimeClass with enabled=false.
+# Only ordinary backend templates get Kata; settings and SSH/auth/config servers
+# use the normal runtime. Disable installation and template injection with enabled=false.
 # All upstream kata-deploy values can be overridden under this key.
 kata:
   enabled: true
@@ -87,7 +94,7 @@ kata:
   # This subchart runs in the ContainerSSH release namespace, not kube-system.
   # Do not use the upstream system-node-critical priority outside kube-system.
   priorityClassName: ""
-  # Install just the non-confidential QEMU Rust runtime used by the base pod.
+  # Install just the non-confidential QEMU Rust runtime used by ordinary templates.
   shims:
     disableAll: true
     qemu-runtime-rs:
@@ -106,13 +113,12 @@ kubernetes:
   # Execution mode: "connection", "session" or "persistent".
   # The dev.box target (and chart default) is "persistent": each authenticated
   # user gets ONE stable pod per pod template, created on demand and reused
-  # across reconnects. Persistent mode stops force-rendering generateName and
-  # normally renders createMissingPods: true. The config server also injects
-  # createMissingPods with the deterministic DNS-1123 metadata.name and
-  # dev.box/owner label per persistent request. If a chart-managed template
-  # selects connection/session mode, base createMissingPods is omitted so that
-  # override remains valid. Persistent mode requires this config server (bundled
-  # configServer or externally operated at configserver.url), or rendering fails.
+  # across reconnects. Persistent mode stops force-rendering generateName. Base
+  # createMissingPods is always omitted because settings uses connection mode;
+  # bundled/external config servers must inject creation only into persistent
+  # responses, alongside deterministic metadata.name and dev.box/owner.
+  # Persistent mode requires a config server
+  # (bundled configServer or configserver.url), or rendering fails.
   mode: persistent
 
   connection:
@@ -135,23 +141,19 @@ kubernetes:
     # burst: 10
 
   pod:
-    # Additional pod metadata (labels, annotations, ...). `metadata.namespace`
-    # is managed by the chart (namespace = sessionNamespace). In persistent
-    # mode `metadata.name` is injected at runtime by the config server (a fixed
-    # name here would give every user the same pod — don't set one).
+    # Shared labels/annotations only. Namespace is chart-managed; fixed name,
+    # generateName and dev.box/owner are forbidden (identity is handler-owned).
     metadata:
       # labels:
       #   team: ssh
       # annotations:
       #   note: "dev box"
-    # Pod spec. Defaults here implement the security guidance from the reference
-    # ("Preventing root escalation/memory/CPU exhaustion"). Override freely; the
-    # structure matches pod.spec (see `kubectl explain pod.spec`).
+    # Shared PodSpec allowlist: containers, securityContext, restartPolicy and
+    # terminationGracePeriodSeconds only. Settings replaces/overwrites these.
+    # securityContext permits runAsNonRoot/runAsUser/runAsGroup/seccompProfile;
+    # only seccompProfile.type may be shared. Put all other fields in ordinary
+    # podTemplates, even when their base value would be false or empty.
     spec:
-      # With kata.enabled=true, the chart adds runtimeClassName: kata-qemu-runtime-rs
-      # if absent. Templates inherit it. An explicit value overrides this default,
-      # even when Kata installation is disabled (externally managed runtime).
-      # runtimeClassName: kata-qemu-runtime-rs
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -170,26 +172,20 @@ kubernetes:
           # env:
           #   - name: VAR
           #     value: Hello world!
-      # volumes:
-      #   - name: home
-      #     hostPath:
-      #       path: /home/ubuntu
-      #       type: Directory
-      # nodeName: <bind pod to a specific node>
 
   # Pod templates selected by SSH username (when configServer.enabled=true).
   # `ssh <name>@host` uses the template named after that username:
   # the config server serves <name>.yaml to that user. Users with no exact
   # matching template are denied; there is no catch-all or base-pod fallback.
-  # With authServer.enabled=true, these names also become an authz allowlist:
+  # Exception: reserved settings is synthesized in code, not a template file.
+  # With authServer.enabled=true, these names plus settings form an authz allowlist:
   # unknown SSH usernames are rejected immediately instead of config retries.
   # "default" is an ordinary name, used only by `ssh default@host`. Each item is a partial
   # kubernetes.pod override (mode/shellCommand/metadata/spec); an optional
   # `security` block overrides the connection security policy (not pod securityContext).
   # Everything left out is inherited from `pod` above / the base config.
-  # The reserved `settings` application template needs the patched v0.6 gateway,
-  # the settings-tui image, and a rebuilt config-server. See examples/settings-template.yaml
-  # and tests/settings-acceptance.md. Append it to this list; retain existing templates.
+  # Do not add settings here: the name is reserved and rejected. Only its image
+  # is configurable under settings.image; its policy/spec live in config-server.
   podTemplates:
     # - name: ubuntu
     #   metadata:
@@ -199,8 +195,11 @@ kubernetes:
     #   metadata:
     #     labels:
     #       dev-box-template: dev
-    # Metadata-only templates inherit the guest image (with containerssh-agent)
-    # and the base runtimeClassName.
+    # Metadata-only templates inherit the guest image (with containerssh-agent).
+    # Each ordinary template gets runtimeClassName: kata-qemu-runtime-rs when Kata
+    # is enabled, unless spec.runtimeClassName is explicitly set (even to "").
+    # Heavy fields such as volumes, serviceAccountName, nodeName, or fsGroup belong
+    # in a template spec, never in the shared base.
 
 ssh:
   # SSH listener port inside the container/pod
@@ -274,8 +273,10 @@ configserver:
 # gives each authenticated user ONE stable box per template: it injects a
 # deterministic DNS-1123 pod name (kubernetes.pod.metadata.name) and the
 # dev.box/owner label derived from the authenticated identity, and enforces the
-# per-user box cap. It runs with its own ServiceAccount holding list-only
-# permission on pods in kubernetes.sessionNamespace.
+# per-user box cap. In every mode it synthesizes settings and reconciles per-owner
+# ServiceAccounts/Roles/RoleBindings. Its namespace-scoped Role grants pods
+# list/get/delete and serviceaccounts/roles/rolebindings get/list/create/update;
+# no escalate/bind is needed because it holds the pod permissions it delegates.
 configServer:
   enabled: false
   # Must point at a built/pushed image — there is no public config-server image.

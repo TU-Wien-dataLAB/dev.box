@@ -1,5 +1,11 @@
 # Settings POC — fork image validation (revision 21)
 
+> **Historical revision-21 evidence.** PR state and runtime/token observations below are as of
+> this run, not current facts. Fork PR #11 merged on 2026-10-16; deploy-line Docker Image
+> [run 38917607974](https://github.com/TU-Wien-dataLAB/ContainerSSH/actions/runs/38917607974) succeeded.
+> That did not change revision 38's gateway pin. For issue #11, use
+> [the new migration and staged plan](settings-code-migration.md); historical results are unchanged.
+
 Status: **deployed for testing with user approval**, 2026-10-14. Selected live
 policy/lifecycle and resize-shutdown checks passed; this is not full issue #9
 acceptance. This report supersedes the revision-20 gateway selection in

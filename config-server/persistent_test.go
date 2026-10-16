@@ -56,9 +56,11 @@ func testHandler(t *testing.T, opts ...func(*configHandler)) *configHandler {
 		t.Fatalf("logger: %v", err)
 	}
 	h := &configHandler{
-		dir:    testTemplateDir(t, map[string]string{"ubuntu.yaml": "{}"}),
-		logger: logger,
-		cache:  map[string]cachedEntry{},
+		settingsImage: "settings:test",
+		kube:          fake.NewSimpleClientset(),
+		dir:           testTemplateDir(t, map[string]string{"ubuntu.yaml": "{}"}),
+		logger:        logger,
+		cache:         map[string]cachedEntry{},
 		boxes: persistentBoxConfig{
 			operatingMode: config.KubernetesExecutionModePersistent,
 			namespace:     "containerssh-sessions",

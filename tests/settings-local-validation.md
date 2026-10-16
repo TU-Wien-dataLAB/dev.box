@@ -1,5 +1,9 @@
 # Settings POC — local validation record
 
+> **Historical issue #9 evidence.** Results below cover the values-defined, inherited-Kata,
+> no-token POC, not issue #11's synthesized settings/scoped-token contracts. See
+> [the new migration and staged plan](settings-code-migration.md); these recorded results are unchanged.
+
 Issue: [#9](https://github.com/TU-Wien-dataLAB/dev.box/issues/9).
 Local checks initially completed 2026-10-12; final PID/resize regression and
 revalidation completed 2026-10-13. **Not live acceptance or deployment approval**.

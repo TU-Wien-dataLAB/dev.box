@@ -1,7 +1,9 @@
 # Settings POC — additional acceptance evidence
 
-**Historical pre-fixture evidence.** Later image/failure/quota and missing-owner
+**Historical pre-fixture issue #9 evidence.** Later image/failure/quota and missing-owner
 SSH checks, plus restored revision 38, are in [fixture evidence](settings-fixture-validation.md).
+Neither report validates issue #11's synthesized settings/scoped-token contracts; follow
+[the new migration and staged plan](settings-code-migration.md). Recorded results below are unchanged.
 
 Date: **2026-10-16**. Release remains revision **21**, with the digest-pinned fork
 image in [revision-21 evidence](settings-fork-validation.md). Issue #9 remains

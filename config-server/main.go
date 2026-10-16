@@ -31,6 +31,7 @@
 // fields are inherited from ContainerSSH's base config (the chart's generated
 // config.yaml). If no template matches, an error is returned. There is no
 // catch-all or base-config fallback; "default" is only used by ssh default@host.
+// The reserved "settings" application is synthesized in code without a file.
 //
 // # Persistent mode
 //
@@ -54,6 +55,7 @@
 //	                               Only persistent enables name/label injection and the cap.
 //	CONTAINERSSH_SESSION_NAMESPACE  namespace of the backend user pods (default containerssh-sessions)
 //	CONTAINERSSH_MAX_PODS_PER_USER  per-owner live-box cap; <= 0 disables the cap (default 3)
+//	CONTAINERSSH_SETTINGS_IMAGE     required image for the code-owned settings application
 //	CONTAINERSSH_TLS_CERT           server certificate (file path or PEM)
 //	CONTAINERSSH_TLS_KEY            server private key (file path or PEM)
 //	CONTAINERSSH_TLS_CLIENTCA       optional CA to verify clients (mTLS) - file path or PEM
@@ -99,10 +101,22 @@ func main() {
 		))
 		os.Exit(1)
 	}
+	settingsImage := env("CONTAINERSSH_SETTINGS_IMAGE", "")
+	if settingsImage == "" {
+		logger.Critical(message.NewMessage("CONFIG_SERVER_SETTINGS_SETUP_FAILED", "CONTAINERSSH_SETTINGS_IMAGE must be configured"))
+		os.Exit(1)
+	}
+	client, err := newKubeClient()
+	if err != nil {
+		logger.Critical(message.NewMessage("CONFIG_SERVER_KUBERNETES_SETUP_FAILED", "Failed to initialize Kubernetes client: %v", err))
+		os.Exit(1)
+	}
 	handler := &configHandler{
-		dir:    dir,
-		logger: logger,
-		cache:  map[string]cachedEntry{},
+		settingsImage: settingsImage,
+		kube:          client,
+		dir:           dir,
+		logger:        logger,
+		cache:         map[string]cachedEntry{},
 		boxes: persistentBoxConfig{
 			operatingMode: operatingMode,
 			namespace:     env("CONTAINERSSH_SESSION_NAMESPACE", "containerssh-sessions"),
@@ -110,14 +124,7 @@ func main() {
 		},
 	}
 	if handler.boxes.enabled() {
-		handler.boxes.pods, err = newKubePodLister()
-		if err != nil {
-			logger.Critical(message.NewMessage(
-				"CONFIG_SERVER_PERSISTENT_SETUP_FAILED",
-				"Failed to initialize persistent-mode pod listing: %v", err,
-			))
-			os.Exit(1)
-		}
+		handler.boxes.pods = &kubePodLister{client: client}
 		if handler.boxes.maxPods <= 0 {
 			logger.Warning(message.NewMessage(
 				"CONFIG_SERVER_CAP_DISABLED",

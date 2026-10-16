@@ -6,7 +6,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 chart="$repo_root/charts/containerssh"
-image="${CONTAINERSSH_IMAGE:-containerssh/containerssh:v0.6}"
+image="${CONTAINERSSH_IMAGE:-ghcr.io/tu-wien-datalab/containerssh:deploy}"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
@@ -64,7 +64,7 @@ validate_config() {
     actual = dump.dig("kubernetes", "pod", "spec", "runtimeClassName")
     abort "ContainerSSH lost runtimeClassName: #{expected.inspect} -> #{actual.inspect}" unless expected == actual
   ' "$config" "$tmp/dump-${label}.json"
-  if [[ "$label" == settings-effective ]]; then
+  if [[ "$label" == settings-effective || "$label" == settings-external-effective ]]; then
     ruby -ryaml -e '
       cfg = YAML.load_file(ARGV[0])
       pod = cfg.dig("kubernetes", "pod")
@@ -76,7 +76,10 @@ validate_config() {
       %w[shell tty].each { |k| abort "#{k} permission lost" unless policy.dig(k, "mode") == "enable" }
       %w[command subsystem env signal].each { |k| abort "#{k} denial lost" unless policy.dig(k, "mode") == "disable" }
       abort "forwarding denial lost" unless policy.fetch("forwarding").values.all? { |v| v == "disable" }
-      abort "guest token policy lost" unless pod.dig("spec", "automountServiceAccountToken") == false
+      abort "scoped token policy lost" unless pod.dig("spec", "automountServiceAccountToken") == true && pod.dig("spec", "serviceAccountName").start_with?("dev-box-owner-")
+      abort "settings must use default runtime" if pod.dig("spec", "runtimeClassName")
+      abort "settings inherited base pod identity" if pod.dig("metadata", "name") || pod.dig("metadata", "labels", "dev.box/owner")
+      abort "settings container floor lost" unless pod.dig("spec", "containers").size == 1 && pod.dig("spec", "containers", 0, "securityContext", "readOnlyRootFilesystem") == true
       abort "owner plumbing lost" unless pod.dig("spec", "containers", 0, "env").any? { |e| e["name"] == "DEV_BOX_AUTHENTICATED_OWNER" && e["value"] == "alice" }
     ' "$tmp/dump-${label}.json"
   fi
@@ -120,28 +123,32 @@ merge_pod_override "$tmp/config-persistent-mixed-base.yaml" "$tmp/override-conne
   "$tmp/config-connection-template-effective.yaml"
 validate_config connection-template-effective "$tmp/config-connection-template-effective.yaml"
 
-# Render the exact example, then merge its security/execution policy as a
-# representative config-webhook response with a verified owner injected.
-ruby -ryaml -e '
-  template = YAML.load_file(ARGV[0])
-  File.write(ARGV[1], YAML.dump({"kubernetes" => {"podTemplates" => [template]}}))
-' "$chart/examples/settings-template.yaml" "$tmp/settings-values.yaml"
+# Use the actual synthesized HTTP response, not a duplicate YAML example.
+(cd "$repo_root/config-server" && CONTAINERSSH_TEST_SETTINGS_RESPONSE="$tmp/settings-override.yaml" \
+  go test -count=1 -run '^TestSettingsWebhookResponse$' .)
+render_config persistent --set configServer.enabled=true >"$tmp/settings-base.yaml"
+
+# Exercise the ordinary per-template Kata response as well as the shared base.
 helm template binary-settings "$chart" --namespace containerssh \
   --set configServer.enabled=true \
-  --set auth.publicKey.webhook.url=https://auth.example.test \
-  -f "$tmp/settings-values.yaml" >"$tmp/settings-rendered.yaml"
+  --set kubernetes.podTemplates[0].name=ubuntu \
+  --set auth.publicKey.webhook.url=https://auth.example.test >"$tmp/settings-rendered.yaml"
 ruby -ryaml -e '
   docs = YAML.load_stream(File.read(ARGV[0])).compact
-  base = docs.find { |d| d["kind"] == "ConfigMap" && d.dig("data", "config.yaml") }.dig("data", "config.yaml")
   templates = docs.find { |d| d["kind"] == "ConfigMap" && d.dig("metadata", "name").end_with?("-templates") }
-  override = YAML.load(templates.dig("data", "settings.yaml"))
-  override.dig("kubernetes", "pod", "spec", "containers")[0]["env"] = [{"name" => "DEV_BOX_AUTHENTICATED_OWNER", "value" => "alice"}]
-  File.write(ARGV[1], base)
-  File.write(ARGV[2], YAML.dump(override))
-' "$tmp/settings-rendered.yaml" "$tmp/settings-base.yaml" "$tmp/settings-override.yaml"
+  override = YAML.load(templates.dig("data", "ubuntu.yaml"))
+  pod = override.dig("kubernetes", "pod")
+  pod["createMissingPods"] = true
+  pod["metadata"] = {"name" => "box-0123456789", "labels" => {"dev.box/owner" => "alice"}}
+  abort "ordinary template lost Kata" unless pod.dig("spec", "runtimeClassName") == "kata-qemu-runtime-rs"
+  File.write(ARGV[1], YAML.dump(override))
+' "$tmp/settings-rendered.yaml" "$tmp/ordinary-override.yaml"
 merge_pod_override "$tmp/settings-base.yaml" "$tmp/settings-override.yaml" "$tmp/settings-effective.yaml"
 validate_config settings-effective "$tmp/settings-effective.yaml"
-merge_pod_override "$tmp/settings-base.yaml" "$tmp/override-persistent.yaml" "$tmp/ordinary-mixed-effective.yaml"
+render_config persistent --set configserver.url=https://config.example.test >"$tmp/settings-external-base.yaml"
+merge_pod_override "$tmp/settings-external-base.yaml" "$tmp/settings-override.yaml" "$tmp/settings-external-effective.yaml"
+validate_config settings-external-effective "$tmp/settings-external-effective.yaml"
+merge_pod_override "$tmp/settings-base.yaml" "$tmp/ordinary-override.yaml" "$tmp/ordinary-mixed-effective.yaml"
 validate_config ordinary-mixed-effective "$tmp/ordinary-mixed-effective.yaml"
 
 # Regression: a true base createMissingPods cannot be cleared by a false/empty

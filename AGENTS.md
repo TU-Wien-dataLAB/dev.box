@@ -14,7 +14,7 @@ disconnecting does not delete it. It consists of:
    deploys ContainerSSH itself plus optional extras.
 2. **`config-server/`** — a small Go server implementing the ContainerSSH config webhook protocol
    (built on `go.containerssh.io/containerssh` `config/webhook`), serving **pod templates selected
-   by SSH username**.
+   by SSH username**, plus the code-owned reserved `settings` application.
 3. **`auth-server/`** — a small Go server implementing the ContainerSSH **auth** webhook protocol
    (`auth/webhook`) that answers "given an SSH public key, which [authentik](https://goauthentik.io)
    user owns it?" with one exact `attributes.sshPublicKey` query (spec in `auth-server/spec.md`).
@@ -113,15 +113,16 @@ ssh ubuntu@dev.box.example.com
 ```
 
 - Per SSH **username** → a pod **template** with that name: `ssh ubuntu@…` → `ubuntu.yaml`.
-- Template lookup: `<username>.yaml` → `<username>.json` → error (connection denied).
+- Ordinary lookup: `<username>.yaml` → `<username>.json` → error (connection denied).
   No catch-all or base-pod fallback; `default` is an ordinary template name used only by
   `ssh default@…`. Empty/unsafe usernames are rejected rather than rewritten.
+  **Reserved exception:** `settings` is always synthesized in code, without a template file.
 - The config-server response is **merged over the chart's base config** (see merge rule below).
 - The lifecycle is ONE stable, deterministic pod per (authenticated user, template): the config
   server injects `kubernetes.pod.metadata.name` = `box-` + first 10 hex of SHA-256 over
   `authenticatedUsername` + resolved template, labels it `dev.box/owner`, and sets
-  `createMissingPods: true` in the per-request response. With base `mode: persistent` (normally
-  also rendering `createMissingPods: true`), ContainerSSH creates that pod if absent, execs each
+  `createMissingPods: true` in the per-request response. With base `mode: persistent` (without
+  base `createMissingPods`), ContainerSSH creates that pod if absent, execs each
   SSH channel in it, and deliberately leaves it running after disconnect.
   The per-owner box cap (`configServer.maxPodsPerUser`, default 3) is enforced server-side in the
   config webhook; reconnects always pass, and listing failures deny (fail closed). Empty
@@ -135,7 +136,7 @@ ssh ubuntu@dev.box.example.com
 
 | Value | Default | Meaning |
 | --- | --- | --- |
-| `image.repository/tag` | `containerssh/containerssh`, `v0.6` | SSH server image |
+| `image.repository/tag` | `ghcr.io/tu-wien-datalab/containerssh`, `deploy` | Fork gateway default; live deployments keep immutable digest pins |
 | `ssh.port` / `service.*` | `2222` / ClusterIP | SSH listener + exposure (NodePort/LB available) |
 | `ingress.enabled` / `ingress.tcp.*` | `false` / `ssh` | Traefik IngressRouteTCP (raw TCP) fronts the SSH port; **no cert-manager/TLS** — SSH is not HTTP |
 | `ssh.hostKey.existingSecret` / `.privateKey` | `""` | stable host key; else ephemeral key fallback |
@@ -145,16 +146,17 @@ ssh ubuntu@dev.box.example.com
 | `authServer.authentik.url` / `.token` | `""` | authentik base URL + read-only service token (or `tokenSecret` existing Secret) — **required** when enabled |
 | `authServer.authentik.keyAttribute` | `""` | user attribute the presented key is looked up by (default `sshPublicKey`) |
 | `authServer.requireGroup` | `""` | optional authentik group required after authentication (authz gate) |
-| `kata.enabled` | `true` | official Kata 4.2.0 subchart; installs QEMU runtime-rs and automatically selects `kata-qemu-runtime-rs` for backend pods only. Disable to omit installer and automatic RuntimeClass; explicit `kubernetes.pod.spec.runtimeClassName` overrides still work |
+| `kata.enabled` | `true` | official Kata 4.2.0 subchart; injects `kata-qemu-runtime-rs` into ordinary named templates unless overridden there; base and settings carry no RuntimeClass |
 | `kubernetes.sessionNamespace` | `containerssh-sessions` | where user pods run (chart force-manages) |
-| `kubernetes.mode` | `persistent` | chart **default**; `connection`/`session` also supported. Persistent normally renders `createMissingPods: true`, never force-renders `generateName`, and requires a bundled/external config server. With mixed-mode chart templates, base `createMissingPods` is omitted and injected only into persistent responses |
-| `kubernetes.pod` | security hard defaults | base pod config inherited by matching templates |
-| `kubernetes.podTemplates` | `[]` | named pod templates (name = SSH username); needs `configServer.enabled` |
+| `kubernetes.mode` | `persistent` | chart **default**; `connection`/`session` also supported. Persistent requires a config server; `createMissingPods: true` is injected only into persistent responses, never the shared base |
+| `kubernetes.pod` | security hard defaults | unconditionally restricted shared base; heavy fields belong in ordinary templates |
+| `kubernetes.podTemplates` | `[]` | ordinary named templates; needs `configServer.enabled`; `settings` is reserved, never an item here |
+| `settings.image.repository/tag` | see values | only settings pod customization; digest-pin for rollout |
 | `configServer.enabled` | `false` | deploy the bundled config server + auto-wire `configserver.url` |
 | `configServer.maxPodsPerUser` | `3` | per-owner live-box cap in persistent mode (`0` = disabled); reconnects always pass; list-failure denies |
 | `configserver.*` | url `""` | client-side config-server connection (timeout/TLS/mTLS) |
 | `networkPolicy.enabled` | `true` | backend user pods: deny ingress, egress internet-only (+ kube-dns) |
-| `rbac.enabled` | `true` | Role/RoleBinding for pod management in session namespace; the config server's own list-pods Role/RoleBinding render only when `configServer.enabled` |
+| `rbac.enabled` | `true` | Role/RoleBinding for pod management in session namespace; config-server reconciliation permissions render when `configServer.enabled` (see scoped-owner RBAC below) |
 | `log.level` | `5` | syslog-numbered (7 debug … 2 crit) |
 
 ## Non-negotiable invariants / gotchas
@@ -163,17 +165,16 @@ ssh ubuntu@dev.box.example.com
   (default), `4` warning, `3` error, `2` crit. Do **not** write "0=trace…5=crit" anywhere.
 - **Persistent mode is implemented and is the chart default.** ContainerSSH v0.6 persistent mode
   finds a pod by exact `kubernetes.pod.metadata.name`; a `generateName` is not enough; on-demand
-  creation needs `kubernetes.pod.createMissingPods: true`. The chart normally renders base
-  `mode: persistent` + `createMissingPods: true`; the config server also injects
+  creation needs `kubernetes.pod.createMissingPods: true`. The chart always renders
+  base `mode: persistent` without base `createMissingPods`; bundled/external config servers inject
   `createMissingPods: true`, a deterministic DNS-1123 pod name (`box-` + first 10 hex of SHA-256
-  over `authenticatedUsername` + resolved template), and the `dev.box/owner` label per persistent
-  request. If a chart-managed template explicitly selects `connection`/`session`, the chart omits
-  base `createMissingPods`: mergo skips false source values, so a base true would survive the mode
-  override and fail upstream validation. Non-persistent responses skip persistent-only injection. The per-owner cap (`configServer.maxPodsPerUser`, default 3) is enforced
+  over trimmed `authenticatedUsername` + NUL + resolved template), and the `dev.box/owner` label
+  per persistent request. Mergo skips false source values: a base true would survive the settings
+  connection-mode override and fail validation. External bases serving settings need the same audit. Non-persistent responses skip this injection. The per-owner cap (`configServer.maxPodsPerUser`, default 3) is enforced
   server-side in the config webhook: reconnect-to-existing always passes, list-failure and empty
   authenticated identity deny (fail closed). Persistent mode without any config server fails
-  chart rendering (story 15). Cluster-level disconnect/reconnect coverage still needs the staged
-  acceptance plan.
+  chart rendering. The historical cluster reconnect check passed; new regression coverage follows
+  the staged acceptance plan.
 - **Persistent means pod lifecycle, not durable storage.** The pod survives SSH disconnects, but its
   writable layer does not survive pod deletion, eviction, node loss, or recreation. Any data that
   must survive those events needs a PVC or another durable store. Persistent user pods require an
@@ -191,6 +192,32 @@ ssh ubuntu@dev.box.example.com
   config via `structutils.Merge` = `mergo.Merge(dst, src, mergo.WithOverride)`. Empty/nil source
   fields are **skipped**, so partial per-template overrides are safe (proven by a mergo test); a
   template that only sets labels keeps the base pod's containers/spec.
+- **Settings / merge boundary:** `settings` is always code-owned, connection-mode, one session
+  per transport, direct `/usr/local/bin/dev-box-settings` (no shell wrapper), PTY/application-shell
+  only; exec/subsystem/env/signal/forwarding denied. UI remains static/read-only. Owner env is the
+  raw server-verified identity (blank denied); display sanitization never changes authorization.
+  The shared base spec unconditionally permits only `containers`, `securityContext`,
+  `restartPolicy`, `terminationGracePeriodSeconds`. Base pod securityContext permits only
+  `runAsNonRoot`, `runAsUser`, `runAsGroup`, `seccompProfile.type`; base metadata permits only
+  labels/annotations without `dev.box/owner`. Move runtime classes, volumes, service accounts and
+  other heavy fields into ordinary templates. Empty/false
+  webhook fields cannot clear unsafe inherited values. Ordinary templates get Kata injection;
+  settings runs on the default runtime.
+- **Scoped owner RBAC:** settings reconciles one ServiceAccount, Role and RoleBinding per owner,
+  all named `dev-box-owner-` + first **48** hex of SHA-256 over the trimmed verified owner.
+  The Role grants only pod `get/delete` on exact deterministic persistent names recomputed from
+  mounted templates; settings/non-persistent names are excluded. Zero names means **zero rules**,
+  never an empty `resourceNames` grant (which would allow every pod). Errors deny the request.
+  ServiceAccount automount defaults **false**; only the settings pod explicitly sets it **true**,
+  mounting its scoped projected token at `/var/run/secrets/kubernetes.io/serviceaccount`.
+  Config-server requires pods `list/get/delete` and serviceaccounts/roles/rolebindings
+  `get/list/create/update` in the session namespace, without `bind/escalate`. It must itself hold
+  delegated pod `get/delete` for Kubernetes anti-escalation checks; updates are needed to reconcile.
+  This is a trust upgrade from list-only access. Three objects persist per owner; GC is explicit
+  operator work only. NetworkPolicy is unchanged and **blocks settings → cluster API**; API
+  authorization via operator impersonation is not proof of network reachability or token use.
+  **Before settings migration, RBAC changes, or acceptance**, read
+  [the migration and staged plan](tests/settings-code-migration.md).
 - **Backend images must contain `containerssh-agent`**: the base pod runs
   `/usr/bin/containerssh-agent wait-signal ...`. Replacing only its image with plain
   `ubuntu:22.04` inherits that command and fails with `stat /usr/bin/containerssh-agent: no such
@@ -231,13 +258,15 @@ ssh ubuntu@dev.box.example.com
   a Helm upgrade can leave the old process running with stale mode/settings (observed during the
   first persistent rollout). An external `existingConfigMap` cannot be checksummed by Helm;
   restart the Deployment manually after changing that object.
-- **Named templates are required by the config server** — unmatched SSH usernames return an
-  error in every mode (issue #6). There is no `default` or base-config fallback. `default` is an
-  ordinary template name. ContainerSSH retries non-200 config responses every ten seconds until
-  timeout, then silently closes SSH. With both bundled servers enabled, the chart also passes an
-  exact-name `AUTH_SERVER_ALLOWED_TEMPLATES` JSON allowlist to auth-server; its authz gate returns
-  HTTP 200 + `success: false` for unknown names, yielding immediate SSH `Permission denied`.
-  An empty list denies all, unset disables the gate, and malformed policy fails auth-server startup.
+- **Ordinary named templates are required by the config server** — unmatched SSH usernames return
+  an error in every mode (issue #6); the sole exception is code-synthesized `settings` with no file.
+  There is no `default` or base-config fallback. `default` is an ordinary template name.
+  ContainerSSH retries non-200 config responses every ten seconds until timeout, then silently
+  closes SSH. With both bundled servers enabled, the chart passes ordinary names **plus `settings`**
+  in `AUTH_SERVER_ALLOWED_TEMPLATES`; unknown names get HTTP 200 + `success: false` for immediate
+  SSH `Permission denied`. With zero ordinary templates only settings remains available. In the
+  auth-server protocol itself an empty allowlist denies all, unset disables the gate, and malformed
+  policy fails startup.
   The optional authentik group gate still applies. External authz webhooks need their own early
   template gate; config-server rejection remains the safety net.
 - **User pods vs. ContainerSSH pod**: the chart ships security defaults for backend user pods
@@ -248,10 +277,12 @@ ssh ubuntu@dev.box.example.com
   busybox has **no `openssl`** and no `ssh-keygen` (verified) — host keys can't be generated
   inside that image; it auto-generates an *ephemeral* key at startup if none is configured (writes
   config → fails gracefully read-only).
-- **No public config-server image** — `config-server/` must be built and pushed before
-  `configServer.enabled=true` will work. In persistent mode the bundled server also needs its own
-  ServiceAccount with `list` on pods in the session namespace (created by the chart), or every
-  connection is denied fail-closed when the cap listing fails.
+- **Config-server startup requires Kubernetes in all modes:** `main` requires
+  `CONTAINERSSH_SETTINGS_IMAGE` and an in-cluster client even for connection/session operation.
+  Use offline handler tests for local development, or an approved deployed service/port-forward;
+  ordinary HTTP handler tests can use fixtures without a real API. Build/publish an immutable
+  config-server image containing the new contracts before rollout. The chart supplies its dedicated
+  ServiceAccount and reconciliation permissions; API errors fail closed.
 
 ## Commands — build & validate
 
@@ -284,18 +315,26 @@ python3 tests/ssh-template-rejection.py --key ~/.ssh/slurm_tu_wien  # deny withi
 
 ```
 
-`tests/chart-config-binary-validation.sh` feeds rendered connection/persistent bases plus
-representative persistent and non-persistent webhook merges to the real
-`containerssh/containerssh:v0.6 --dump-config`; every case must exit 0 without
-`CORE_CONFIG_ERROR`. Set `CONTAINERSSH_IMAGE` to validate another image.
+`tests/chart-config-binary-validation.sh` feeds rendered bases and actual synthesized settings /
+representative ordinary webhook merges through the real merger and pod/security validators, then
+`--dump-config` on the fork gateway (`ghcr.io/tu-wien-datalab/containerssh:deploy` by default).
+Every valid case must exit 0 without `CORE_CONFIG_ERROR`; parsing alone is not policy acceptance.
+Set `CONTAINERSSH_IMAGE` to validate the intended immutable rollout image.
 
 ## Deployment status
 
-**Current status (2026-10-16):** revision **38**, chart **0.3.2**, restores the original
+**Code default versus rollout:** fork [PR #11](https://github.com/TU-Wien-dataLAB/ContainerSSH/pull/11)
+merged `settings-change` → `deploy` on 2026-10-16; deploy-line
+[Docker Image run 38917607974](https://github.com/TU-Wien-dataLAB/ContainerSSH/actions/runs/38917607974)
+succeeded. The chart default is `ghcr.io/tu-wien-datalab/containerssh:deploy`, not a live image
+selection. Existing rollout image pins are independent of chart defaults. Issue #11 migration
+and acceptance require [this staged plan](tests/settings-code-migration.md).
+
+**Historical revision-38 baseline (2026-10-16):** revision **38**, chart **0.3.2**, restores the original
 values after approved prototype fixtures. Gateway remains the digest-pinned
 [fork PR #11](https://github.com/TU-Wien-dataLAB/ContainerSSH/pull/11) test image,
 `ghcr.io/tu-wien-datalab/containerssh:pr-11@sha256:529a4f5618be89a56e3714fe9f77cf886a6674131e0cec5f5f1b28841d92beb9`.
-The PR (`settings-change` → `deploy`) is **not merged**. For current acceptance,
+The PR (`settings-change` → `deploy`) merged on 2026-10-16. For historical acceptance,
 read [fixture evidence](tests/settings-fixture-validation.md): guest-image upgrade,
 TUI crash/startup failure, missing-owner SSH denial, cap boundary, restoration,
 and the final policy/resize run passed; ordinary box UID is unchanged. Temporary
@@ -308,7 +347,7 @@ The revision-19 notes below describe the pre-Settings baseline; the
 - Target cluster context: **`container-ssh`** (created; control plane reachable).
   Current default context is `container-ssh` — still pass `--kube-context container-ssh` explicitly
   (helm) / `--context container-ssh` (kubectl).
-- Helm release `containerssh` revision 19 is **deployed** in namespace `containerssh` with chart
+- **Historical revision-19 baseline:** Helm release `containerssh` revision 19 was deployed in namespace `containerssh` with chart
   `0.3.1` in persistent mode (upgraded 2026-09-30); ContainerSSH, auth-server, and config-server are
   all Ready. Ingress remains disabled (ClusterIP + local port-forward). Revision 19 added the
   auth-server template authorization gate (`AUTH_SERVER_ALLOWED_TEMPLATES=["ubuntu"]`) and changed
@@ -365,7 +404,7 @@ The revision-19 notes below describe the pre-Settings baseline; the
   and `authz` (group gate off by default); password authentication is absent, and the auth server
   no longer serves `/config`.
 
-Remaining before the staged persistent-mode validation:
+Historical revision-19 follow-up list (not the issue #11 acceptance plan):
   1. ✅ (implemented in this change) — persistent-mode contract: the chart renders
      `mode: persistent` + `createMissingPods: true` by default, stops force-rendering
      `generateName`, and fails rendering when persistent mode has no config server. In mixed-mode
@@ -384,15 +423,16 @@ Remaining before the staged persistent-mode validation:
   4. Optional, later: `ingress.enabled=true` + the one-time Traefik TCP entrypoint/port setup
      (see values.yaml `ingress`, NOTES.txt).
 
-Current auth/config smoke-install command (no ingress; the chart's default is now
-`persistent`, so the bundled `configServer` must be enabled — this is the real target shape):
+Fresh auth/config smoke-install shape (not a live upgrade; provide published immutable
+config-server and settings image values via a reviewed file, plus an ordinary `ubuntu` template):
   ```bash
   helm install containerssh charts/containerssh \
     --kube-context container-ssh --namespace containerssh --create-namespace \
     --set authServer.enabled=true \
     --set authServer.authentik.url=https://authentik.example.com \
     --set authServer.authentik.tokenSecret=containerssh-authentik-token \
-    --set configServer.enabled=true
+    --set configServer.enabled=true \
+    -f /secure/path/reviewed-image-and-template-values.yaml
   ```
   then `kubectl --context container-ssh port-forward -n containerssh svc/containerssh 2222:2222`
   and `ssh -p 2222 ubuntu@localhost`.

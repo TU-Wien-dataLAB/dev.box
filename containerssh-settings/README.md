@@ -1,5 +1,12 @@
 # Settings gateway patch — issue #9
 
+> **Historical POC build tooling and validation record.** The maintained gateway is the
+> [ContainerSSH fork](https://github.com/TU-Wien-dataLAB/ContainerSSH); PR #11 merged into `deploy`
+> on 2026-10-16. The chart defaults to `ghcr.io/tu-wien-datalab/containerssh:deploy`; preserve live
+> digest pins independently. For current rollout contracts, follow
+> [the issue #11 migration/acceptance guide](../tests/settings-code-migration.md). The local build
+> instructions and historical validation below do not establish issue #11 acceptance.
+
 ## Why this custom gateway exists
 
 `gateway.patch` changes only stock ContainerSSH v0.6.0:

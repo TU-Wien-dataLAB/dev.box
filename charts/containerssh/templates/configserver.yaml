@@ -5,12 +5,12 @@ from values.kubernetes.podTemplates, plus a Deployment and a Service that serve
 the template matching the SSH username exactly (no fallback). configserver.url is auto-wired to
 this Service in configmap.yaml.
 
-The server gets its OWN ServiceAccount with a Role limited to LISTING pods in the
-session namespace — the only Kubernetes permission the persistent-mode box cap
-needs (the main ContainerSSH Role/RoleBinding for pod management is unchanged).
+The server gets its OWN ServiceAccount for the persistent cap and per-owner
+ServiceAccount/Role/RoleBinding reconciliation in the session namespace. Holding
+get/delete on pods allows it to delegate the owner's exact pod names without
+escalate or bind (the gateway's pod-management Role is unchanged).
 */}}
-{{- if .Values.configServer.enabled }}
----
+{{- define "containerssh.templateConfigMap" }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -20,17 +20,9 @@ metadata:
     app.kubernetes.io/component: config-server
 data:
   {{- range $i, $tpl := .Values.kubernetes.podTemplates }}
-  {{- if eq (default "" $tpl.name) "settings" }}
-  {{- $baseSpec := default dict $.Values.kubernetes.pod.spec }}
-  {{- $baseMetadata := default dict $.Values.kubernetes.pod.metadata }}
-  {{- range $key := list "volumes" "initContainers" "ephemeralContainers" "serviceAccountName" "automountServiceAccountToken" "hostNetwork" "hostPID" "hostIPC" "shareProcessNamespace" }}
-  {{- if get $baseSpec $key }}
-  {{- fail (printf "settings cannot inherit kubernetes.pod.spec.%s: partial overrides cannot clear unsafe base fields" $key) }}
-  {{- end }}
-  {{- end }}
-  {{- if or (get $baseMetadata "name") (get (default dict (get $baseMetadata "labels")) "dev.box/owner") }}
-  {{- fail "settings cannot inherit a fixed base pod name or dev.box/owner label" }}
-  {{- end }}
+  {{- $spec := deepCopy (default dict $tpl.spec) }}
+  {{- if and $.Values.kata.enabled (not (hasKey $spec "runtimeClassName")) }}
+  {{- $_ := set $spec "runtimeClassName" "kata-qemu-runtime-rs" }}
   {{- end }}
   {{ default (printf "template-%d" $i) $tpl.name }}.yaml: |
     {{- with $tpl.security }}
@@ -50,11 +42,15 @@ data:
         metadata:
 {{ toYaml . | indent 10 }}
     {{- end }}
-    {{- with $tpl.spec }}
+    {{- with $spec }}
         spec:
 {{ toYaml . | indent 10 }}
     {{- end }}
   {{- end }}
+{{- end }}
+{{- if .Values.configServer.enabled }}
+---
+{{ include "containerssh.templateConfigMap" . }}
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -75,9 +71,14 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["pods"]
-    # The persistent-mode box cap only lists live pods by owner label; no
-    # create/get/watch/delete — least privilege by design.
-    verbs: ["list"]
+    # List for the cap; get/delete can be delegated to name-scoped owner Roles.
+    verbs: ["list", "get", "delete"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get", "list", "create", "update"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["get", "list", "create", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -111,6 +112,8 @@ spec:
       app.kubernetes.io/component: config-server
   template:
     metadata:
+      annotations:
+        checksum/templates: {{ include "containerssh.templateConfigMap" . | sha256sum }}
       labels:
         {{- include "containerssh.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: config-server
@@ -134,6 +137,8 @@ spec:
             capabilities:
               drop: ["ALL"]
           env:
+            - name: CONTAINERSSH_SETTINGS_IMAGE
+              value: {{ include "containerssh.settingsImage" . | quote }}
             - name: CONTAINERSSH_CONFIG_DIR
               value: /config
             - name: CONTAINERSSH_LISTEN

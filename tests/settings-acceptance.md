@@ -1,5 +1,11 @@
 # How to accept the shell-free Settings POC (issue #9)
 
+> **Historical issue #9 runbook — not instructions for the current chart.** Its values-defined
+> settings item, stock chart default, inherited Kata and no-token floor describe the original POC.
+> For code-synthesized settings, scoped projected tokens, per-template Kata and current approval
+> gates, use [the issue #11 migration/acceptance guide](settings-code-migration.md). Keep the old
+> steps below only to interpret historical evidence; do not apply their obsolete values migration.
+
 Scope: [issue #9](https://github.com/TU-Wien-dataLAB/dev.box/issues/9), not container
 management or completion of parent #7. Use the existing development release only.
 **Status: revision 38 restores the approved fork PR #11 image and original values
@@ -26,9 +32,8 @@ CONTAINERSSH_IMAGE=containerssh-settings:dev tests/chart-config-binary-validatio
 docker build --platform linux/amd64 -t config-server:settings config-server
 ```
 
-Use the example item at
-[`charts/containerssh/examples/settings-template.yaml`](../charts/containerssh/examples/settings-template.yaml),
-not a replacement list of ordinary templates. **The patched gateway is required**:
+The original POC used a hand-authored settings item appended to the ordinary template list.
+That example has been removed; this historical procedure is superseded by the issue #11 guide. **The patched gateway is required**:
 stock v0.6 accepts repeated starts and ignores the configured signal denial.
 The chart defaults deliberately remain on the stock gateway; registration alone
 is not deployment readiness. The settings image contains no SSH server or shell.

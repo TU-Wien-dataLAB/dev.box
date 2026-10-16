@@ -14,7 +14,7 @@ This chart is modeled on the official documentation:
 
 | Resource | Purpose |
 | --- | --- |
-| `Deployment` | Runs the `containerssh/containerssh` SSH server (default port **2222**) |
+| `Deployment` | Runs the fork gateway `ghcr.io/tu-wien-datalab/containerssh:deploy` (default port **2222**; digest-pin live releases) |
 | `ConfigMap` | Renders the ContainerSSH `config.yaml` (Kubernetes backend) from `values.yaml` |
 | `ServiceAccount` | Identity used *by ContainerSSH* to talk to the Kubernetes API (bearer token + in-cluster CA) |
 | `Role` + `RoleBinding` | Least-privilege RBAC that lets the ServiceAccount create/exec/log backend user pods **only** in their namespace (see the "Securing Kubernetes" section of the reference) |
@@ -22,12 +22,13 @@ This chart is modeled on the official documentation:
 | `NetworkPolicy` *(optional)* | Backend user pods: no ingress, egress to the public internet only |
 | `Secret` *(optional)* | Stable SSH host key (see below) |
 | `Deployment` + `Service` *(optional)* | Bundled authentik-backed auth server (`authServer.enabled`) |
-| `Deployment` + `Service` + `ServiceAccount` + `Role`/`RoleBinding` *(optional)* | Bundled config server (`configServer.enabled`) — its own ServiceAccount holds **list-only** permission on pods in the session namespace, just enough for the persistent-mode box cap |
+| `Deployment` + `Service` + `ServiceAccount` + `Role`/`RoleBinding` *(optional)* | Bundled config server (`configServer.enabled`) — pod cap listing plus scoped-owner RBAC reconciliation in the session namespace (trust boundary below) |
 | `Service` | Exposes the SSH port (ClusterIP by default) |
 | `test-connection` Job | `helm test` smoke check that the SSH port is reachable |
 | Kata installer `DaemonSet`, RBAC, and `RuntimeClass` *(optional, enabled by default)* | Official `kata-deploy` dependency; installs Kata on nodes and isolates backend user pods in VMs (`kata.enabled`) |
 
-The Kubernetes backend configuration follows the reference:
+The shared Kubernetes backend configuration follows the reference (ordinary-template responses
+supply persistent names/creation flags; RuntimeClass is selected per ordinary template, not here):
 
 ```yaml
 backend: kubernetes
@@ -39,9 +40,8 @@ kubernetes:
   pod:
     metadata:
       namespace: <session-namespace>
-      generateName: containerssh-
+    mode: persistent
     spec:
-      runtimeClassName: kata-qemu-runtime-rs
       containers:
         - name: shell
           image: containerssh/containerssh-guest-image
@@ -64,12 +64,12 @@ kubernetes:
 
 ContainerSSH v0.6 persistent mode looks up an exact pod by `kubernetes.pod.metadata.name`,
 executes SSH channels in that pod, and skips pod removal when the SSH connection closes. The chart
-default is `kubernetes.mode: persistent` with `createMissingPods: true`; the config server supplies
-the request-specific `metadata.name` and also sets `createMissingPods: true`, so the named pod is
-created on first use and reused afterwards. If any chart-managed template explicitly selects
-`connection` or `session`, the chart omits base-level `createMissingPods` and leaves it to each
-persistent response: ContainerSSH's merge cannot clear a true boolean, so an unconditional base
-true would make that non-persistent template invalid.
+default is `kubernetes.mode: persistent`; the config server supplies the request-specific
+`metadata.name` and `createMissingPods: true`, so the named pod is created on first use and reused
+afterwards. The shared base always omits `createMissingPods`: ContainerSSH's merge cannot clear
+a true boolean, which would make the synthesized connection-mode settings application invalid.
+External config servers must also inject creation only into persistent responses; external
+`existingConfigMap` bases require the same omission.
 
 The box identity is provided by the **config server** at connection time:
 
@@ -83,8 +83,9 @@ The box identity is provided by the **config server** at connection time:
    cap is denied server-side (reconnecting to an existing box always passes).
 
 Because the box identity comes from the *authenticated* username, two users who both type
-`ssh ubuntu@…` never share a pod, and usernames without an exact named template are denied
-instead of falling back to a default image. The cap and naming logic live in the config webhook, so
+`ssh ubuntu@…` never share a pod, and ordinary usernames without an exact named template are denied
+instead of falling back to a default image. The reserved `settings` application is synthesized
+without a template file and does not create a persistent box. The cap and naming logic live in the config webhook, so
 clients cannot bypass them.
 
 **Requirements / caveats:**
@@ -126,9 +127,11 @@ helm install containerssh . \
 ### Run backend pods in Kata Containers
 
 The chart pins the official [`kata-deploy` OCI chart](https://kata-containers.github.io/kata-containers/installation/#install-on-kubernetes-with-helm-recommended)
-to **4.2.0**, enabled by default as the `kata` dependency. The base/sample backend pod uses
-`runtimeClassName: kata-qemu-runtime-rs`; metadata-only username templates inherit it. The SSH
-server and both webhook servers keep the cluster's normal runtime.
+to **4.2.0**, enabled by default as the `kata` dependency. Each ordinary named template receives
+`spec.runtimeClassName: kata-qemu-runtime-rs` unless it explicitly selects a runtime class. The
+shared base has **no** RuntimeClass. Synthesized settings pods, the SSH server, and both webhook
+servers use the cluster's default runtime. With no named templates/config webhook, there is no
+automatic backend runtime selection.
 
 Before installing:
 
@@ -145,16 +148,15 @@ Before installing:
    and confirm `kubectl get runtimeclass kata-qemu-runtime-rs` before connecting.
 
 To omit Kata entirely, add `--set kata.enabled=false` to your Helm command. This omits the
-installer, its RuntimeClass/RBAC/hooks, and the automatic backend `runtimeClassName`.
-To use an **externally managed** runtime, also set
-`--set kubernetes.pod.spec.runtimeClassName=<existing-class>`. An explicit pod-spec value takes
-precedence even with the bundled installer enabled; if selecting a different Kata shim, enable
-that shim under `kata.shims` as well.
+installer, its RuntimeClass/RBAC/hooks, and automatic ordinary-template runtime selection.
+To use an **externally managed** runtime, set `spec.runtimeClassName` on each applicable ordinary
+`kubernetes.podTemplates` item. An explicit per-template value takes precedence even with the
+installer enabled; if selecting another Kata shim, enable it under `kata.shims` as well.
+`kubernetes.pod.spec.runtimeClassName` is rejected by the unconditional base restriction.
 
-`existingConfigMap` bypasses generated backend configuration: set `runtimeClassName` in that
-external config yourself, or disable the installer if it is not needed. A named pod-template
-`spec.runtimeClassName` can override the base class; templates cannot clear an inherited class
-with an empty value because ContainerSSH skips empty fields during merge.
+`existingConfigMap` bypasses the chart-generated base: independently audit it against the same
+safe-base contract. Keep RuntimeClass selection in ordinary webhook responses, not a shared base
+that would leak it into settings. External config webhooks must implement their own selection.
 
 For an existing persistent deployment, migrate/save data and deliberately recreate backend pods
 before expecting the new runtime to take effect. Changing configuration does not mutate their
@@ -255,7 +257,7 @@ See `values.yaml` for the complete, annotated list. Highlights:
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `image.repository`, `image.tag` | `containerssh/containerssh`, `v0.6` | ContainerSSH image |
+| `image.repository`, `image.tag` | `ghcr.io/tu-wien-datalab/containerssh`, `deploy` | Fork gateway default, not a live rollout; pin deployed images by digest |
 | `replicaCount` | `1` | Number of SSH server replicas |
 | `ssh.port` | `2222` | SSH listener port |
 | `ssh.hostKey.existingSecret` | `""` | Name of a Secret holding `host.key` (recommended) |
@@ -264,10 +266,10 @@ See `values.yaml` for the complete, annotated list. Highlights:
 | `kubernetes.createSessionNamespace` | `true` | Create that namespace if it doesn't exist |
 | `kubernetes.mode` | `persistent` | `connection`, `session`, or `persistent` (dev.box default). `persistent` needs a config server (bundled or external) — the chart fails otherwise |
 | `kubernetes.pod.metadata` | `{}` | Pod metadata extended and merged with defaults |
-| `kubernetes.pod.spec` | backend user-container defaults | Full pod spec (image, volumes, resources, nodeName, securityContext…) |
-| `kata.enabled` | `true` | Install the official Kata dependency and automatically select `kata-qemu-runtime-rs` for backend pods |
+| `kubernetes.pod.spec` | backend user-container defaults | Restricted shared base: only `containers`, `securityContext`, `restartPolicy`, `terminationGracePeriodSeconds`; heavy fields belong in ordinary templates |
+| `kata.enabled` | `true` | Install the official Kata dependency and inject `kata-qemu-runtime-rs` into ordinary named templates unless explicitly overridden |
 | `kata.*` | QEMU runtime-rs only, DaemonSet mode | Upstream `kata-deploy` values (distribution, node selection, shims, etc.) |
-| `kubernetes.pod.spec.runtimeClassName` | auto when Kata is enabled, otherwise absent | Explicit override, including for externally managed runtimes |
+| `kubernetes.podTemplates[].spec.runtimeClassName` | auto for ordinary templates when Kata is enabled | Per-template runtime override; base and settings have no RuntimeClass |
 | `auth.*.webhook.url` | `""` | External auth webhooks; password or publicKey is required unless the bundled auth server is enabled. **v0.6 gotcha:** the YAML key is `publicKey` — `auth.pubkey` is a deprecated boolean flag and the real binary rejects a map there (`cannot unmarshal !!map into bool`) |
 | `auth.*.webhook.timeout` | `30s` | Per-request timeout, kept below the 60s overall authentication timeout |
 | `authServer.enabled` | `false` | Deploy the bundled authentik-backed auth server and wire it |
@@ -283,7 +285,8 @@ See `values.yaml` for the complete, annotated list. Highlights:
 | `configserver.url` | `""` | Config server URL (auto-set when bundled server is enabled) |
 | `configServer.enabled` | `false` | Deploy the bundled config server in-chart |
 | `configServer.maxPodsPerUser` | `3` | Per-owner live-box cap in persistent mode (0 = disabled); always allows reconnects |
-| `kubernetes.podTemplates` | `[]` | Pod templates selected by SSH username (template `name` = username) |
+| `kubernetes.podTemplates` | `[]` | Ordinary pod templates selected by SSH username; `settings` is reserved and cannot be declared here |
+| `settings.image.repository`, `settings.image.tag` | see `values.yaml` | Only settings customization; tag accepts an immutable tag, `sha256:…` (renders repository@digest), or `tag@sha256:…` |
 | `authServer.authentik.url` | `""` | authentik base URL (required when `authServer.enabled`) |
 | `authServer.authentik.token` | `""` | authentik service token (chart creates a Secret) |
 | `authServer.authentik.tokenSecret` | `""` | existing Secret with the read-only token (preferred over `token`) |
@@ -300,19 +303,20 @@ the **bundled config server** (source in `dev.box/config-server`).
 3. On every SSH connection, ContainerSSH asks the config server for a config, which is **merged
    over the base config**. The server looks up a template **by the SSH username**:
    `ssh ubuntu@host` → template named `ubuntu`; no match → error (SSH connection denied).
+   The sole exception is reserved `settings`, synthesized in code without any template file.
 
 Net effect: each user selects a pod flavor by connecting with its template name. There is no
-catch-all: `default` is an ordinary template usable only by `ssh default@host`. An empty list
-with the bundled config server enabled denies all connections.
+catch-all: `default` is an ordinary template usable only by `ssh default@host`. With an empty
+ordinary list, only settings is available through the bundled config server.
 
-With both bundled servers enabled, the chart also passes these names to the auth-server's
-`AUTH_SERVER_ALLOWED_TEMPLATES` authorization policy. Unknown SSH usernames receive a prompt
+With both bundled servers enabled, the chart passes these names **plus `settings` automatically**
+to the auth-server's `AUTH_SERVER_ALLOWED_TEMPLATES` authorization policy. Unknown SSH usernames receive a prompt
 `Permission denied`, before reaching the config webhook. Without this authorization gate,
 ContainerSSH v0.6 retries config-webhook errors until timeout and then closes SSH without showing
 the template error. External authorization webhooks must provide their own early template gate.
 
-Example `values.yaml` (the base pod and these metadata-only templates automatically use
-`kata-qemu-runtime-rs` while `kata.enabled=true`):
+Example `values.yaml` (these ordinary metadata-only templates get `kata-qemu-runtime-rs`
+while `kata.enabled=true`; the shared base does not):
 
 ```yaml
 kubernetes:
@@ -359,8 +363,76 @@ helm install containerssh . \
   template always resolves to the same pod; more templates = more boxes up to the cap; spawning at
   the cap is denied while reconnecting always works. Delete a box explicitly when it is no longer
   needed (see the persistent-mode section above).
-- **Image required**: build and push `dev.box/config-server` and point `configServer.image` at it
-  (no public image exists yet).
+- **Images required**: build/publish the new config-server and select an immutable
+  `configServer.image`; also configure `settings.image`. The server requires a settings image and
+  in-cluster Kubernetes client at startup in every mode, not only persistent mode.
+
+## Reserved settings application and owner authorization
+
+With the bundled config server, `ssh -t settings@host` always selects a **code-synthesized**
+connection-mode application. No `settings.yaml`/`.json` is read or rendered; a `settings` item in
+`kubernetes.podTemplates` is rejected. Values expose only `settings.image.repository/tag`, not its
+security policy or pod spec. The existing static TUI/image and q-only terminal contract are unchanged.
+
+The server forces `/usr/local/bin/dev-box-settings` directly, permits PTY and application-shell
+startup only, denies exec/subsystem/env/signal/forwarding, and limits each transport to one session.
+The non-root container has a read-only root, no capabilities or privilege escalation, and bounded
+resources. It receives raw `DEV_BOX_AUTHENTICATED_OWNER` only from verified authentication metadata;
+blank identities deny. Display sanitization is not authorization. Settings uses no Kata RuntimeClass,
+persistent name or `dev.box/owner` cap label. Full disconnect cleans up its disposable pod; `q`
+alone need not close a multiplexed parent connection.
+
+### Shared-base restrictions
+
+The base restriction is **unconditional**, not activated by a settings template item. Only
+`containers`, `securityContext`, `restartPolicy`, and `terminationGracePeriodSeconds` are accepted
+at `kubernetes.pod.spec`. Within base `securityContext`, only `runAsNonRoot`, `runAsUser`,
+`runAsGroup` and `seccompProfile.type` are allowed. Base metadata permits labels/annotations only,
+without `dev.box/owner`; fixed names and other metadata fields are rejected. Volumes,
+init/ephemeral containers, service accounts, automount, host namespaces, runtime classes and other
+heavy fields belong in ordinary named templates. ContainerSSH skips empty/false source fields in
+the merge, so a synthesized response cannot reliably clear unsafe base values. Audit external base
+ConfigMaps against this same boundary; bypassing chart rendering does not make inherited fields safe.
+
+### Scoped-token trust boundary
+
+On every settings request the config server reconciles three objects in the session namespace:
+one ServiceAccount, Role, and RoleBinding, all named `dev-box-owner-` + first **48 hex characters**
+of SHA-256 over the trimmed verified owner. The Role grants only pod **get/delete** on exact
+persistent box names recomputed from the mounted ordinary template list. No settings or
+connection/session names, pod list/watch, exec/log, or foreign-owner grants are included. Zero
+persistent names means **zero rules**, never a rule with empty `resourceNames` (which grants all
+names). Removed/added templates reconcile on the next settings connection; this is not a controller.
+Reconciliation errors deny the connection rather than issue a credential with unverified grants.
+
+The ServiceAccount sets `automountServiceAccountToken: false`; the synthesized settings **pod**
+explicitly overrides it to `true`. Kubelet delivers the scoped projected token and CA at
+`/var/run/secrets/kubernetes.io/serviceaccount`. The static TUI does not use the token. This replaces
+the historical POC's no-token floor with **scoped token only**, not management functionality.
+
+The config server's own namespaced permissions expand from list-only to:
+
+| Resource | Verbs |
+| --- | --- |
+| core `pods` | `list`, `get`, `delete` |
+| core `serviceaccounts` | `get`, `list`, `create`, `update` |
+| RBAC `roles`, `rolebindings` | `get`, `list`, `create`, `update` |
+
+There is no `bind` or `escalate` grant. Kubernetes requires the server to hold the pod get/delete
+permissions it delegates; reconcile needs update, so issue #11's original create/get/list-only
+proposal is insufficient. This is an explicit **trust upgrade**: compromise of the config server
+can affect namespace pods and authorization objects. Only verified owners and operator-mounted
+templates determine grants. Object count is three per owner, not per connection; abandoned-owner
+objects remain until explicit operator GC. Helm uninstall does not collect them.
+
+**NetworkPolicy is unchanged and blocks settings → cluster API.** Mounted credentials and
+`kubectl auth can-i` impersonation checks prove different seams; neither proves a settings-pod API
+call. A real call from settings remains blocked until a separately approved network-policy change.
+No such change is part of this issue.
+
+For the one-time values migration, secure export, approval gates, and staged RBAC/token/SSH
+acceptance, follow [How to migrate settings to code](../../tests/settings-code-migration.md).
+Historical POC reports are not evidence for these new runtime/token/RBAC contracts.
 
 ## Bundled authentik auth server (`authServer.enabled`)
 
@@ -435,6 +507,10 @@ reference:
 ```bash
 helm uninstall containerssh -n containerssh
 ```
+
+Per-owner ServiceAccounts, Roles and RoleBindings are created by the config server, not Helm;
+retain them or collect explicitly after identifying the owner and active settings sessions.
+There is no automatic GC for these three objects per owner.
 
 Backend pods are not owned by the Helm release. ContainerSSH removes them after SSH disconnect in
 connection/session modes, but deliberately retains them in persistent mode. Before uninstalling a

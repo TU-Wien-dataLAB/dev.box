@@ -1,8 +1,10 @@
 # Build the disposable Settings acceptance fixture
 
 This tooling verifies issue #9 failure paths; it is **not a management API or a
-production guest image**. See [live results](../settings-fixture-validation.md)
-and the [acceptance runbook](../settings-acceptance.md) before any deployment.
+production guest image**. See [historical live results](../settings-fixture-validation.md)
+and the current [migration/acceptance guide](../settings-code-migration.md) before any deployment.
+The [issue #9 runbook](../settings-acceptance.md) is historical; its values-defined settings item
+and no-token floor no longer describe the current chart.
 
 ## Validate and publish
 
@@ -29,9 +31,10 @@ and the [acceptance runbook](../settings-acceptance.md) before any deployment.
 
 ## Use within an approved fixture run
 
-- For an image-upgrade test, change only the existing Settings template's guest
-  image, preserve ordinary values/Secret references, and wait until the deployed
-  config webhook serves the new template. Hold an old connection open; compare
+- For a separately approved image-upgrade test, change only `settings.image.repository/tag`
+  to the pinned fixture reference, preserve ordinary values/Secret references, and wait until the
+  deployed config webhook synthesizes the new image. Do not add a settings template item or
+  override its code-owned policy. Hold an old connection open; compare
   old/new pod UIDs and imageIDs. Restore the original image afterwards.
 - For an unexpected TUI crash, identify a newly created Settings test pod and
   confirm its exact UID and fixture image before administrative exec of

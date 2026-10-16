@@ -64,8 +64,8 @@ func (c persistentBoxConfig) enabled() bool {
 }
 
 // PodLister returns live pod names for one owner in a namespace. It is the only
-// Kubernetes dependency the config server has (RBAC: list pods in the session
-// namespace). The owner label value passed in is already Kubernetes-valid.
+// cap dependency (RBAC: list pods in the session namespace). Owner authorization
+// uses the Kubernetes client separately. The label value is already K8s-valid.
 type PodLister interface {
 	LivePodNamesForOwner(ctx context.Context, namespace, ownerLabel string) ([]string, error)
 }
@@ -94,17 +94,18 @@ func (l *kubePodLister) LivePodNamesForOwner(ctx context.Context, namespace, own
 	return names, nil
 }
 
-// newKubePodLister builds a PodLister from the in-cluster service account.
-func newKubePodLister() (PodLister, error) {
+// newKubeClient uses the config server's in-cluster service account for both
+// cap listing and per-owner authorization reconciliation.
+func newKubeClient() (kubernetes.Interface, error) {
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
-		return nil, fmt.Errorf("cannot build in-cluster Kubernetes config for pod listing: %w", err)
+		return nil, fmt.Errorf("cannot build in-cluster Kubernetes config: %w", err)
 	}
 	client, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("cannot build Kubernetes client for pod listing: %w", err)
+		return nil, fmt.Errorf("cannot build Kubernetes client: %w", err)
 	}
-	return &kubePodLister{client: client}, nil
+	return client, nil
 }
 
 // applyPersistent derives the box identity from the authenticated username and

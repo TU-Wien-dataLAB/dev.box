@@ -14,6 +14,7 @@ import (
 	"go.containerssh.io/containerssh/message"
 
 	"gopkg.in/yaml.v3"
+	"k8s.io/client-go/kubernetes"
 )
 
 const (
@@ -40,23 +41,29 @@ type cachedEntry struct {
 }
 
 // configHandler implements config.RequestHandler. Each user's request is served
-// the pod template named exactly after their username. Unmatched usernames
-// are denied; there is no default-template or base-config fallback.
+// the pod template named exactly after their username, except for the reserved
+// code-owned settings application. Unmatched usernames are denied; there is no
+// default-template or base-config fallback.
 //
 // In persistent mode it additionally derives the box identity from the
 // authenticated identity (not the client-chosen username), injects a
 // deterministic DNS-1123 pod name plus the owner label, and enforces the
 // per-user pod cap. See persistent.go for that contract.
 type configHandler struct {
-	dir    string
-	logger log.Logger
-	mu     sync.Mutex
-	cache  map[string]cachedEntry
-	boxes  persistentBoxConfig
+	dir           string
+	logger        log.Logger
+	mu            sync.Mutex
+	cache         map[string]cachedEntry
+	boxes         persistentBoxConfig
+	settingsImage string
+	kube          kubernetes.Interface
 }
 
 // OnConfig is called by ContainerSSH on every authenticated SSH connection.
 func (h *configHandler) OnConfig(req config.Request) (config.AppConfig, error) {
+	if req.Username == settingsTemplateName {
+		return h.settingsConfig(req)
+	}
 	cfg, source, err := h.load(req.Username)
 	if err != nil {
 		code := logCodeParseError
@@ -73,12 +80,6 @@ func (h *configHandler) OnConfig(req config.Request) (config.AppConfig, error) {
 	}
 	name := filepath.Base(source)
 	templateName := strings.TrimSuffix(name, filepath.Ext(name))
-	if templateName == "settings" {
-		cfg, err = applySettings(req, cfg)
-		if err != nil {
-			return config.AppConfig{}, err
-		}
-	}
 
 	// Persistent-mode injection is skipped for a template that explicitly
 	// selects a non-persistent mode (a fixed per-user name would break

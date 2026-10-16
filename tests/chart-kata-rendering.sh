@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Kata dependency, backend RuntimeClass selection, opt-out, and template inheritance.
+# Kata dependency, per-template RuntimeClass selection, opt-out, and overrides.
 # Prerequisites: helm dependency build charts/containerssh; Helm and Ruby/YAML.
 set -euo pipefail
 
@@ -15,14 +15,16 @@ render() {
     --set authServer.enabled=true \
     --set authServer.authentik.url=https://authentik.example.test \
     --set authServer.authentik.tokenSecret=authentik-read-token \
-    --set configServer.enabled=true "$@" >"$tmp/$name.yaml"
+    --set configServer.enabled=true \
+    --set 'kubernetes.podTemplates[0].name=ubuntu' "$@" >"$tmp/$name.yaml"
 }
 
 render default
 render disabled --set kata.enabled=false
 render connection --set kubernetes.mode=connection
-render custom --set kubernetes.pod.spec.runtimeClassName=external-kata
-render external --set kata.enabled=false --set kubernetes.pod.spec.runtimeClassName=external-kata
+render custom --set 'kubernetes.podTemplates[0].spec.runtimeClassName=external-kata'
+render external --set kata.enabled=false --set 'kubernetes.podTemplates[0].spec.runtimeClassName=external-kata'
+render empty-runtime --set 'kubernetes.podTemplates[0].spec.runtimeClassName='
 render templates \
   --set 'kubernetes.podTemplates[0].name=ubuntu' \
   --set 'kubernetes.podTemplates[0].metadata.labels.dev-box-template=ubuntu' \
@@ -43,7 +45,7 @@ ruby -ryaml -e '
   end
 
   root = ARGV.fetch(0)
-  %w[default disabled connection custom external templates].each do |name|
+  %w[default disabled connection custom external templates empty-runtime].each do |name|
     path = File.join(root, "#{name}.yaml")
     documents = docs(path)
     enabled = !%w[disabled external].include?(name)
@@ -64,10 +66,14 @@ ruby -ryaml -e '
     pod = config(documents).dig("kubernetes", "pod")
     expected_runtime = case name
       when "disabled" then nil
+      when "empty-runtime" then ""
       when "custom", "external" then "external-kata"
       else "kata-qemu-runtime-rs"
     end
-    abort "#{name}: wrong backend runtime" unless pod.dig("spec", "runtimeClassName") == expected_runtime
+    abort "#{name}: base runtime leaks into settings" if pod.fetch("spec").key?("runtimeClassName")
+    templates = documents.find { |d| d.dig("metadata", "name") == "kata-test-containerssh-templates" }
+    ubuntu = YAML.load(templates.fetch("data").fetch("ubuntu.yaml"))
+    abort "#{name}: wrong ordinary template runtime" unless ubuntu.dig("kubernetes", "pod", "spec", "runtimeClassName") == expected_runtime
     abort "#{name}: guest image lost" unless pod.dig("spec", "containers", 0, "image") == "containerssh/containerssh-guest-image"
     abort "#{name}: security defaults lost" unless pod.dig("spec", "securityContext", "runAsNonRoot") == true
     documents.select { |d| d["kind"] == "Deployment" }.each do |deployment|
@@ -79,12 +85,19 @@ ruby -ryaml -e '
   templates = docs(File.join(root, "templates.yaml")).find { |d| d.dig("metadata", "name") == "kata-test-containerssh-templates" }
   ubuntu = YAML.load(templates.fetch("data").fetch("ubuntu.yaml"))
   custom = YAML.load(templates.fetch("data").fetch("custom.yaml"))
-  abort "metadata-only template must inherit the base spec" if ubuntu.dig("kubernetes", "pod").key?("spec")
+  abort "metadata-only template must get Kata injected" unless ubuntu.dig("kubernetes", "pod", "spec") == {"runtimeClassName" => "kata-qemu-runtime-rs"}
   abort "template runtime override lost" unless custom.dig("kubernetes", "pod", "spec", "runtimeClassName") == "external-kata"
-  puts "OK   templates inherit the Kata base or explicitly override it"
+  puts "OK   templates get Kata injected or explicitly override it"
 
   enabled_checksum = checksum(docs(File.join(root, "default.yaml")))
   disabled_checksum = checksum(docs(File.join(root, "disabled.yaml")))
-  abort "Kata toggle must restart ContainerSSH with updated config" if enabled_checksum.to_s.empty? || enabled_checksum == disabled_checksum
-  puts "OK   Kata toggle changes the generated-config checksum"
+  abort "Kata toggle must not change the shared base config" if enabled_checksum.to_s.empty? || enabled_checksum != disabled_checksum
+  puts "OK   Kata toggle leaves the shared-base config unchanged"
+
+  checksums = %w[default disabled templates].map do |name|
+    server = docs(File.join(root, "#{name}.yaml")).find { |d| d["kind"] == "Deployment" && d.dig("metadata", "name").end_with?("-config-server") }
+    server.dig("spec", "template", "metadata", "annotations", "checksum/templates")
+  end
+  abort "template/Kata changes must restart the config-server" if checksums.any? { |s| s.to_s.empty? } || checksums.uniq.length != 3
+  puts "OK   template and Kata changes update the config-server checksum"
 ' "$tmp"

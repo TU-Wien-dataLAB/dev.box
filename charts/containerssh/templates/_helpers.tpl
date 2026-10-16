@@ -49,6 +49,16 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- printf "%s:%s" .Values.image.repository (.Values.image.tag | toString) }}
 {{- end }}
 
+{{- define "containerssh.settingsImage" -}}
+{{- $repository := required "settings.image.repository is required" .Values.settings.image.repository -}}
+{{- $tag := required "settings.image.tag is required" .Values.settings.image.tag | toString -}}
+{{- if hasPrefix "sha256:" $tag -}}
+{{- printf "%s@%s" $repository $tag -}}
+{{- else -}}
+{{- printf "%s:%s" $repository $tag -}}
+{{- end -}}
+{{- end }}
+
 {{/*
 Whether an SSH host key is provided, and which secret to mount it from.
 Returns "true"/"false" when an existing secret or a chart-rendered secret is used.

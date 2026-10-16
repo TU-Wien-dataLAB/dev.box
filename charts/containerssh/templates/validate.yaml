@@ -1,0 +1,36 @@
+{{- /* These invariants also apply with external config maps/webhooks.
+Mergo skips empty source values. Settings replaces the containers slice and
+explicitly overwrites restartPolicy/terminationGracePeriodSeconds. Every other
+PodSpec field must live in an ordinary template, never the shared base.
+*/ -}}
+{{- $spec := default dict .Values.kubernetes.pod.spec }}
+{{- range $key, $_ := $spec }}
+{{- if not (has $key (list "containers" "securityContext" "restartPolicy" "terminationGracePeriodSeconds")) }}
+{{- fail (printf "unsafe shared base kubernetes.pod.spec.%s: move this field to ordinary kubernetes.podTemplates" $key) }}
+{{- end }}
+{{- end }}
+{{- $securityContext := default dict $spec.securityContext }}
+{{- range $key, $_ := $securityContext }}
+{{- if not (has $key (list "runAsNonRoot" "runAsUser" "runAsGroup" "seccompProfile")) }}
+{{- fail (printf "unsafe shared base kubernetes.pod.spec.securityContext.%s: settings cannot clear inherited fields; move it to ordinary kubernetes.podTemplates" $key) }}
+{{- end }}
+{{- end }}
+{{- range $key, $_ := (default dict $securityContext.seccompProfile) }}
+{{- if ne $key "type" }}
+{{- fail (printf "unsafe shared base kubernetes.pod.spec.securityContext.seccompProfile.%s: only type is overwritten by settings" $key) }}
+{{- end }}
+{{- end }}
+{{- $metadata := default dict .Values.kubernetes.pod.metadata }}
+{{- range $key, $_ := $metadata }}
+{{- if not (has $key (list "labels" "annotations")) }}
+{{- fail (printf "unsafe shared base kubernetes.pod.metadata.%s: only labels and annotations may be shared" $key) }}
+{{- end }}
+{{- end }}
+{{- if hasKey (default dict $metadata.labels) "dev.box/owner" }}
+{{- fail "unsafe shared base kubernetes.pod.metadata.labels.dev.box/owner: owner identity is injected by the config server" }}
+{{- end }}
+{{- range .Values.kubernetes.podTemplates }}
+{{- if eq (default "" .name) "settings" }}
+{{- fail "settings is reserved: remove it from kubernetes.podTemplates and configure settings.image.repository/tag instead" }}
+{{- end }}
+{{- end }}

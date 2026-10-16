@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
 # Validate the persistent-mode chart rendering surface:
-#   * default kubernetes.mode renders persistent + createMissingPods: true and
-#     no metadata.generateName;
-#   * when a chart template explicitly selects a non-persistent mode, base-level
-#     createMissingPods is omitted and injected only into persistent responses;
+#   * default kubernetes.mode renders persistent without metadata.generateName;
+#   * the shared base always omits createMissingPods: the code-owned
+#     settings response is connection mode; the handler injects persistent creation;
 #   * connection mode keeps generateName and has no createMissingPods;
 #   * persistent mode without a config server (no bundled server, no external
 #     configserver.url) fails rendering with an actionable message;
 #   * the per-user box cap reaches the config-server deployment as
 #     CONTAINERSSH_MAX_PODS_PER_USER;
-#   * the config-server's list-pods ServiceAccount/Role/RoleBinding render only
-#     when configServer.enabled=true, and live in the session namespace.
+#   * config-server namespace-scoped RBAC covers cap + per-owner reconciliation
+#     without escalate/bind and renders only when configServer.enabled=true.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -33,7 +32,7 @@ render_all() {
   helm template "$release" "$chart" --namespace "$namespace" "$@"
 }
 
-# --- default mode: persistent + createMissingPods, no generateName ----------
+# --- default bundled mode: persistent, request-scoped creation, no generateName ---
 config="$(render_config --set authServer.enabled=true \
   --set authServer.authentik.url=https://authentik.example.test \
   --set authServer.authentik.tokenSecret=authentik-read-token \
@@ -42,12 +41,12 @@ printf '%s' "$config" | ruby -ryaml -e '
   config = YAML.load(STDIN.read)
   pod = config.dig("kubernetes", "pod")
   abort "mode is not persistent" unless pod.dig("mode") == "persistent"
-  abort "createMissingPods not rendered in persistent mode" unless pod["createMissingPods"] == true
+  abort "base createMissingPods leaks into code-owned settings" if pod.key?("createMissingPods")
   metadata = pod.dig("metadata") || abort("pod metadata missing")
   abort "generateName must not be force-rendered in persistent mode" if metadata.key?("generateName")
   abort "session namespace not rendered" unless metadata.dig("namespace") == "containerssh-sessions"
 '
-printf 'OK   default mode = persistent, createMissingPods=true, no generateName\n'
+printf 'OK   default mode = persistent, request-scoped creation, no generateName\n'
 
 # --- mixed mode omits base createMissingPods so connection templates work ---
 config="$(render_config --set authServer.enabled=true \
@@ -63,6 +62,26 @@ printf '%s' "$config" | ruby -ryaml -e '
   abort "base createMissingPods makes a connection-mode template invalid" if pod.key?("createMissingPods")
 '
 printf 'OK   mixed-mode templates use request-scoped createMissingPods\n'
+
+# Even an all-persistent ordinary list still has the code-owned settings peer.
+config="$(render_config --set auth.publicKey.webhook.url=https://auth.example.test \
+  --set configServer.enabled=true \
+  --set 'kubernetes.podTemplates[0].name=ubuntu' \
+  --set 'kubernetes.podTemplates[0].mode=persistent')"
+printf '%s' "$config" | ruby -ryaml -e '
+  pod = YAML.load(STDIN.read).dig("kubernetes", "pod")
+  abort "all-persistent ordinary templates leaked creation into settings" if pod.key?("createMissingPods")
+'
+printf 'OK   all-persistent ordinary templates still omit base createMissingPods\n'
+
+# --- external config servers may synthesize settings too -------------------
+config="$(render_config --set auth.publicKey.webhook.url=https://auth.example.test \
+  --set configserver.url=https://config.example.test)"
+printf '%s' "$config" | ruby -ryaml -e '
+  pod = YAML.load(STDIN.read).dig("kubernetes", "pod")
+  abort "external config server inherits unsafe persistent creation" if pod.key?("createMissingPods")
+'
+printf 'OK   external config server also uses request-scoped createMissingPods\n'
 
 # --- connection mode keeps generateName and no createMissingPods ------------
 config="$(render_config --set kubernetes.mode=connection \
@@ -146,7 +165,7 @@ assert_cap "cap is configurable via chart value" 5 \
   --set configServer.enabled=true \
   --set configServer.maxPodsPerUser=5
 
-# --- list-pods RBAC renders only when the config server is enabled -----------
+# --- cap + owner-access RBAC renders only when the config server is enabled ---
 assert_rbac() {
   local name="$1"
   local enabled="$2"
@@ -157,21 +176,29 @@ assert_rbac() {
       suffix = "-config-server"
       sa = docs.any? { |d| d["kind"] == "ServiceAccount" && d.dig("metadata", "name").end_with?(suffix) }
       role = docs.find { |d| d["kind"] == "Role" && d.dig("metadata", "name").end_with?(suffix) }
-      binding = docs.any? { |d| d["kind"] == "RoleBinding" && d.dig("metadata", "name").end_with?(suffix) }
+      binding = docs.find { |d| d["kind"] == "RoleBinding" && d.dig("metadata", "name").end_with?(suffix) }
       expected = (ARGV.fetch(0) == "true")
       abort "config-server ServiceAccount = #{sa}, want #{expected}" unless sa == expected
-      abort "config-server RoleBinding = #{binding}, want #{expected}" unless binding == expected
+      abort "config-server RoleBinding = #{!!binding}, want #{expected}" unless !!binding == expected
       if expected
         abort "config-server Role missing" unless role
         rules = role["rules"] || abort("Role has no rules")
-        abort "Role must limit to list pods: #{rules.inspect}" unless rules == [{ "apiGroups" => [""], "resources" => ["pods"], "verbs" => ["list"] }]
+        expected_rules = [
+          {"apiGroups" => [""], "resources" => ["pods"], "verbs" => ["list", "get", "delete"]},
+          {"apiGroups" => [""], "resources" => ["serviceaccounts"], "verbs" => ["get", "list", "create", "update"]},
+          {"apiGroups" => ["rbac.authorization.k8s.io"], "resources" => ["roles", "rolebindings"], "verbs" => ["get", "list", "create", "update"]}
+        ]
+        abort "Role must grant only cap and owner reconciliation permissions: #{rules.inspect}" unless rules == expected_rules
         abort "Role must live in the session namespace" unless role.dig("metadata", "namespace") == "containerssh-sessions"
+        abort "binding namespace mismatch" unless binding.dig("metadata", "namespace") == "containerssh-sessions"
+        abort "binding subject mismatch" unless binding["subjects"] == [{"kind" => "ServiceAccount", "name" => "persistent-test-containerssh-config-server", "namespace" => "containerssh"}]
+        abort "binding role mismatch" unless binding["roleRef"] == {"kind" => "Role", "name" => role.dig("metadata", "name"), "apiGroup" => "rbac.authorization.k8s.io"}
       end
     ' "$enabled"
   printf 'OK   %s\n' "$name"
 }
 
-assert_rbac "config-server list-pods RBAC rendered when enabled" true \
+assert_rbac "config-server cap + owner-access RBAC rendered when enabled" true \
   --set authServer.enabled=true --set authServer.authentik.url=https://authentik.example.test \
   --set authServer.authentik.tokenSecret=authentik-read-token \
   --set configServer.enabled=true
