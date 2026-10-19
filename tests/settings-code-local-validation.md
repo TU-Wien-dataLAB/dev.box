@@ -1,5 +1,9 @@
 # Settings as code — local validation (issue #11)
 
+> **Follow-up, 2026-10-19:** the reviewed config-server image is now published and live migration
+> and scoped-pod acceptance passed at release revision 41. See [live evidence](settings-code-live-validation.md)
+> for current results and explicit token/network/Calico limitations. The local-only record below is historical.
+
 Date: **2026-10-16**. Source: issue #11 implementation over
 `d0a02e6f87019b80b6bb5252a2698496d814c636`, before the implementation commit.
 Local checks only; **no live rollout, cluster mutations, SSH acceptance, or Kubernetes

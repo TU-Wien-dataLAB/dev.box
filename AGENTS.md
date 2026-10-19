@@ -323,6 +323,18 @@ Set `CONTAINERSSH_IMAGE` to validate the intended immutable rollout image.
 
 ## Deployment status
 
+**Current status (2026-10-19):** revision **41**, chart **0.3.3**. Issue #11's code-owned Settings
+migration is deployed with user approval. Config-server is pinned to
+`sha-5bca171@sha256:b74681bf6d3cd12ccfd01f7e4b6f5d368386882b297375d77e030f782dc204dc`;
+gateway/auth and the Settings guest retain their previous digest pins. The old Settings template
+is removed; default-runtime Settings uses its owner's projected token and exact-name pod Role.
+Live policy/lifetime, projected-file presence, impersonated authorization, isolated reconciliation/
+failure/cap checks passed; ordinary Kata pod UID is unchanged and fixtures are removed.
+**Before evaluating #11 closure or adding token-consuming actions, read
+[live evidence and limitations](tests/settings-code-live-validation.md)**: inherited Calico policy
+permissions remain, mounted-bearer authentication was not exercised, API egress stays blocked,
+and two-real-owner acceptance remains #10.
+
 **Code default versus rollout:** fork [PR #11](https://github.com/TU-Wien-dataLAB/ContainerSSH/pull/11)
 merged `settings-change` → `deploy` on 2026-10-16; deploy-line
 [Docker Image run 38917607974](https://github.com/TU-Wien-dataLAB/ContainerSSH/actions/runs/38917607974)
