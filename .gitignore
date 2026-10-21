@@ -2,3 +2,6 @@
 settings-tui/settings-tui
 config-server/config-server
 auth-server/auth-server
+
+# Python bytecode from local test runs
+__pycache__/
