@@ -54,3 +54,31 @@ spec:
       {{- end }}
     {{- end }}
 {{- end }}
+---
+{{- /*
+Settings management egress: the single scoped exception to the policy above.
+Settings pods (dev.box/application=settings) read box state and delete boxes
+through their owner-scoped projected token; without this rule the Kubernetes
+API is unreachable for them. Ordinary pods keep internet-only egress.
+*/}}
+{{- if and .Values.rbac.enabled .Values.networkPolicy.enabled .Values.networkPolicy.settingsApiEgress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: containerssh-sessions-settings-api
+  namespace: {{ .Values.kubernetes.sessionNamespace }}
+  labels:
+    {{- include "containerssh.labels" . | nindent 4 }}
+spec:
+  # Only the settings application pods, never ordinary user pods.
+  podSelector:
+    matchLabels:
+      dev.box/application: settings
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+      {{- toYaml .Values.networkPolicy.settingsApiEgress.to | nindent 8 }}
+      ports:
+      {{- toYaml .Values.networkPolicy.settingsApiEgress.ports | nindent 8 }}
+{{- end }}

@@ -14,7 +14,8 @@ import (
 const (
 	settingsTemplateName = "settings"
 	settingsOwnerEnv     = "DEV_BOX_AUTHENTICATED_OWNER"
-	settingsExecutable   = "/usr/local/bin/dev-box-settings"
+	settingsTemplatesEnv = "DEV_BOX_BOX_TEMPLATES"
+	settingsExecutable    = "/usr/local/bin/dev-box-settings"
 )
 
 // settingsConfig is the reserved application, not a user-editable template.
@@ -28,7 +29,14 @@ func (h *configHandler) settingsConfig(req config.Request) (config.AppConfig, er
 	if h.settingsImage == "" {
 		return config.AppConfig{}, fmt.Errorf("settings image is not configured")
 	}
-	account, err := h.ensureOwnerAccess(owner)
+	// The management UI lists exactly the owner's persistent box templates and
+	// derives their deterministic names itself; unreadable/unparsable template
+	// files deny the connection (fail closed) instead of serving a stale list.
+	templates, err := h.persistentTemplates()
+	if err != nil {
+		return config.AppConfig{}, fmt.Errorf("read settings box templates: %w", err)
+	}
+	account, err := h.ensureOwnerAccess(owner, templates)
 	if err != nil {
 		return config.AppConfig{}, fmt.Errorf("ensure settings owner access: %w", err)
 	}
@@ -68,7 +76,10 @@ func (h *configHandler) settingsConfig(req config.Request) (config.AppConfig, er
 				},
 				Containers: []corev1.Container{{
 					Name: "settings", Image: h.settingsImage,
-					Env: []corev1.EnvVar{{Name: settingsOwnerEnv, Value: owner}},
+					Env: []corev1.EnvVar{
+						{Name: settingsOwnerEnv, Value: owner},
+						{Name: settingsTemplatesEnv, Value: strings.Join(templates, ",")},
+					},
 					SecurityContext: &corev1.SecurityContext{
 						AllowPrivilegeEscalation: ptr.To(false), ReadOnlyRootFilesystem: ptr.To(true),
 						Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},

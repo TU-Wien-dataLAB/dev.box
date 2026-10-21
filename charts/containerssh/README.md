@@ -282,6 +282,8 @@ See `values.yaml` for the complete, annotated list. Highlights:
 | `networkPolicy.allowClusterDNS` | `true` | Allow DNS to kube-dns so internet egress resolves names |
 | `networkPolicy.exceptRanges` | RFC1918, CGNAT, link-local | CIDRs treated as "not internet" (blocked) |
 | `networkPolicy.extraEgress` | `[]` | Extra egress peers for backend user pods |
+| `networkPolicy.settingsApiEgress.enabled` | `true` | Settings-only egress exception to the Kubernetes API (the management UI's only cluster destination) |
+| `networkPolicy.settingsApiEgress.to`/`.ports` | kube-system `kube-apiserver` pods, TCP 443+6443 | API peers/ports; override for clusters that front the API differently (e.g. k3d server node `ipBlock`) |
 | `configserver.url` | `""` | Config server URL (auto-set when bundled server is enabled) |
 | `configServer.enabled` | `false` | Deploy the bundled config server in-chart |
 | `configServer.maxPodsPerUser` | `3` | Per-owner live-box cap in persistent mode (0 = disabled); always allows reconnects |
@@ -407,8 +409,11 @@ Reconciliation errors deny the connection rather than issue a credential with un
 
 The ServiceAccount sets `automountServiceAccountToken: false`; the synthesized settings **pod**
 explicitly overrides it to `true`. Kubelet delivers the scoped projected token and CA at
-`/var/run/secrets/kubernetes.io/serviceaccount`. The static TUI does not use the token. This replaces
-the historical POC's no-token floor with **scoped token only**, not management functionality.
+`/var/run/secrets/kubernetes.io/serviceaccount`. The management TUI uses exactly this token for its
+whole Kubernetes surface: per-name pod **get/delete** on the deterministic names above, nothing
+wider. The trusted `DEV_BOX_BOX_TEMPLATES` env var carries the owner's current ordinary persistent
+template names (the same walk that computes the Role's `resourceNames`), so the UI's row list can
+never diverge from its authorization.
 
 The config server's own namespaced permissions expand from list-only to:
 
@@ -425,13 +430,19 @@ can affect namespace pods and authorization objects. Only verified owners and op
 templates determine grants. Object count is three per owner, not per connection; abandoned-owner
 objects remain until explicit operator GC. Helm uninstall does not collect them.
 
-**NetworkPolicy is unchanged and blocks settings → cluster API.** Mounted credentials and
-`kubectl auth can-i` impersonation checks prove different seams; neither proves a settings-pod API
-call. A real call from settings remains blocked until a separately approved network-policy change.
-No such change is part of this issue.
+**Settings egress: exactly one scoped NetworkPolicy exception.** The chart renders a second
+NetworkPolicy (`containerssh-sessions-settings-api`, value `networkPolicy.settingsApiEgress`) that
+allows settings pods (`dev.box/application=settings`) to reach the Kubernetes API — the management
+UI's only cluster destination — while ordinary pods keep the deny-ingress/egress-internet-only
+policy above. The default peer targets a kubeadm-style control plane (kube-system
+`kube-apiserver` pods, TCP 443 and 6443); override `to`/`ports` for clusters that front the API
+differently. Mounted credentials and `kubectl auth can-i` impersonation checks prove different
+seams than a real settings-pod API call; the live request is approval-gated.
 
 For the one-time values migration, secure export, approval gates, and staged RBAC/token/SSH
-acceptance, follow [How to migrate settings to code](../../tests/settings-code-migration.md).
+acceptance, follow [How to migrate settings to code](../../tests/settings-code-migration.md);
+for the management UI rollout, follow
+[the management acceptance plan](../../tests/settings-management-migration.md).
 Historical POC reports are not evidence for these new runtime/token/RBAC contracts.
 
 ## Bundled authentik auth server (`authServer.enabled`)
@@ -486,10 +497,34 @@ user-facing message. Existing releases retain their explicitly configured image 
 - **Fail-closed**: while an auth webhook URL is set, ContainerSSH *denies* connections when the
   auth request errors — authentik must be reachable from this pod.
 - **Password is not configured** by the bundled server, and its protocol-required `/password`
-  handler always denies.
+  handler always denies. ContainerSSH still advertises this method; see
+  [Known rough edge: SSH password prompts](#known-rough-edge-ssh-password-prompts).
 - **Public-key equality is strict**: `attributes.sshPublicKey` must be a single-element list whose
   item exactly matches the webhook value. Zero or multiple matches deny cleanly; there is no
   alternate query or directory scan.
+
+## Known rough edge: SSH password prompts
+
+ContainerSSH v0.6 registers password and keyboard-interactive SSH callbacks even when those
+methods are disabled. Consequently, OpenSSH may fall back to a password prompt after a rejected
+key or unknown template. This does **not** mean password authentication is enabled: the bundled
+setup never accepts a password or verifies one against authentik.
+
+This limitation is intentionally retained with the stock ContainerSSH image. Neither Helm values
+nor auth-webhook responses can suppress these advertised methods; doing so requires a
+ContainerSSH patch and a custom image.
+
+A public-key-only client invocation avoids password fallback:
+
+```bash
+ssh -o PreferredAuthentications=publickey -o IdentitiesOnly=yes \
+  -i ~/.ssh/slurm_tu_wien -p 2222 ubuntu@localhost
+```
+
+These options can also be saved under the matching `Host` entry in `~/.ssh/config`.
+An encrypted private key may still request its **local passphrase**, which is distinct from a
+server password. For unattended connections, `BatchMode=yes` additionally suppresses interactive
+prompts, including key-passphrase prompts; the key must already be usable without interaction.
 
 ## Security guidance (from the reference)
 
@@ -506,7 +541,10 @@ reference:
   internet only. Internal ranges are blocked by default (adapt `networkPolicy.exceptRanges`
   to your pod/service CIDRs, and use `networkPolicy.extraEgress` to open specific
   cluster-internal services the backend user pods must reach). Disable with `networkPolicy.enabled: false`
-  if your CNI does not support NetworkPolicies.
+  if your CNI does not support NetworkPolicies. One additional scoped exception applies to settings
+  pods only: `networkPolicy.settingsApiEgress` allows egress to the Kubernetes API (TCP 443/6443
+  to the kube-system `kube-apiserver` pods by default) so the management UI can read box state and
+  delete boxes through the owner's projected token; ordinary user pods never match it.
 
 ## Uninstall
 

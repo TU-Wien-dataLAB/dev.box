@@ -7,7 +7,7 @@ ARG TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
-COPY main.go ./
+COPY *.go ./
 RUN test "$TARGETOS/$TARGETARCH" = "linux/amd64" || \
     (echo 'Official agent is amd64-only; build with --platform linux/amd64' >&2; exit 1)
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \

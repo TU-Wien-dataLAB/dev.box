@@ -1,3 +1,18 @@
+// Command dev-box-settings is the code-owned dev.box management application.
+//
+// It runs as the only program of the settings guest image and is launched
+// directly by ContainerSSH on the PTY of an `ssh -t settings@host` session.
+// It renders one row per box template the operator published for the verified
+// owner, refreshed from the Kubernetes API through the owner's projected
+// token, and offers exactly one management action: delete (confirm with y).
+//
+// Trusted inputs (set by the config server, never by the client):
+//
+//	DEV_BOX_AUTHENTICATED_OWNER  the server-verified identity
+//	DEV_BOX_BOX_TEMPLATES        comma-separated persistent box template names
+//
+// Failing closed means exiting with an explanatory message: there is no shell
+// in the image to fall back to.
 package main
 
 import (
@@ -5,53 +20,15 @@ import (
 	"os"
 	"strings"
 	"time"
-	"unicode"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/ansi"
 	"golang.org/x/term"
 )
 
-type settings struct {
-	owner         string
-	width, height int
-}
-
-func (s settings) Init() tea.Cmd { return nil }
-
-func (s settings) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyPressMsg:
-		if msg.Code == 'q' && msg.Mod == 0 {
-			return s, tea.Quit
-		}
-	case tea.WindowSizeMsg:
-		s.width, s.height = msg.Width, msg.Height
-	}
-	return s, nil
-}
-
-func (s settings) View() tea.View {
-	lines := []string{"Settings", "POC / read-only", "Owner: " + s.owner, "q: quit"}
-	if s.height == 3 {
-		lines = []string{"Settings", "POC/RO " + s.owner, "q: quit"}
-	} else if s.height == 2 {
-		lines = []string{"Settings POC/RO", "q: quit"}
-	} else if s.height < 2 {
-		lines = []string{"q: quit"}
-	}
-	for i := range lines {
-		lines[i] = ansi.Truncate(lines[i], max(1, s.width), "…")
-	}
-	view := tea.NewView(strings.Join(lines, "\n"))
-	view.AltScreen = true
-	return view
-}
-
 func run() error {
-	owner := os.Getenv("DEV_BOX_AUTHENTICATED_OWNER")
+	owner := os.Getenv(ownerEnv)
 	if strings.TrimSpace(owner) == "" {
-		return fmt.Errorf("trusted DEV_BOX_AUTHENTICATED_OWNER is missing; contact the operator")
+		return fmt.Errorf("trusted %s is missing; contact the operator", ownerEnv)
 	}
 	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
 		return fmt.Errorf("a usable PTY is required on stdin and stdout; connect with ssh -t settings@HOST")
@@ -68,15 +45,22 @@ func run() error {
 		return fmt.Errorf("a usable PTY with nonzero dimensions is required; connect with ssh -t settings@HOST")
 	}
 	// Identity is trusted for authentication, not for terminal interpretation.
-	// Replace controls, bidi/format characters, and non-printing separators
-	// before any renderer sees them. Do not parse identity as ANSI markup.
-	owner = strings.Map(func(r rune) rune {
-		if !unicode.IsPrint(r) || unicode.Is(unicode.Cf, r) {
-			return '?'
-		}
-		return r
-	}, owner)
-	_, err = tea.NewProgram(settings{owner: owner, width: width, height: height},
+	// Keep the canonical (trimmed) raw identity for box naming — the config
+	// server hashes exactly this value — and let the view sanitize it for
+	// display: controls, bidi/format characters, and non-printing separators
+	// never reach a renderer, and the identity is never parsed as ANSI markup.
+	owner = strings.TrimSpace(owner)
+	templates, err := parseTemplates(os.Getenv(templatesEnv))
+	if err != nil {
+		return err
+	}
+	// A missing client is a degraded deployment, not a crash: the UI stays up,
+	// reports Unreachable, dims its rows, and disables delete.
+	client, err := newBoxClient()
+	if err != nil {
+		client = unavailableClient{err: err}
+	}
+	_, err = tea.NewProgram(newModel(owner, templates, client, width, height),
 		tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run()
 	return err
 }

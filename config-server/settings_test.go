@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -73,14 +75,10 @@ func TestSettingsReceivesVerifiedOwnerWithoutOccupyingPersistentQuota(t *testing
 	if pod.Mode != config.KubernetesExecutionModeConnection || pod.CreateMissingPods || pod.Metadata.Name != "" || pod.Metadata.Labels[ownerLabelKey] != "" {
 		t.Fatalf("settings became a persistent box: %+v", pod.Metadata)
 	}
-	var owners []string
-	for _, env := range pod.Spec.Containers[0].Env {
-		if env.Name == "DEV_BOX_AUTHENTICATED_OWNER" {
-			owners = append(owners, env.Value)
-		}
-	}
-	if len(owners) != 1 || owners[0] != "alice" {
-		t.Fatalf("settings owner = %q, want only verified alice", owners)
+	env := pod.Spec.Containers[0].Env
+	if len(env) != 2 || env[0].Name != "DEV_BOX_AUTHENTICATED_OWNER" || env[0].Value != "alice" ||
+		env[1].Name != "DEV_BOX_BOX_TEMPLATES" || env[1].Value != "ubuntu" {
+		t.Fatalf("settings env = %+v; want exactly the verified owner and box template list", env)
 	}
 }
 
@@ -146,6 +144,93 @@ func TestSettingsOwnersAreIsolatedAcrossConcurrentConnections(t *testing.T) {
 		}(owner)
 	}
 	wg.Wait()
+}
+
+// The management UI's row list is the owner Role's template list: only
+// ordinary persistent templates, sorted, joined; nothing derived from the
+// client. Non-persistent templates, settings and invalid names never appear.
+func TestSettingsTemplateListIsThePersistentBoxSurface(t *testing.T) {
+	h := settingsHandler(t)
+	h.dir = testTemplateDir(t, map[string]string{
+		"zeta.yaml":       "{}",
+		"ubuntu.yaml":     "{}",
+		"alpha.json":      "{}",
+		"ephemeral.yaml":  "kubernetes:\n  pod:\n    mode: connection\n",
+		"settings.yaml":   "{}",
+		"ignored.txt":     "{}",
+		"bad name.yaml":   "{}",
+	})
+	cfg, err := h.OnConfig(configRequest("settings", "alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := cfg.Kubernetes.Pod.Spec.Containers[0].Env
+	if len(env) != 2 || env[1].Name != "DEV_BOX_BOX_TEMPLATES" || env[1].Value != "alpha,ubuntu,zeta" {
+		t.Fatalf("settings template list = %+v, want sorted persistent ordinary templates", env)
+	}
+	// The Role grants get/delete on exactly those templates' deterministic names.
+	role, err := h.kube.RbacV1().Roles(h.boxes.namespace).Get(
+		context.Background(), cfg.Kubernetes.Pod.Spec.ServiceAccountName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []string
+	for _, template := range []string{"alpha", "ubuntu", "zeta"} {
+		want = append(want, boxPodName("alice", template))
+	}
+	sort.Strings(want)
+	if len(role.Rules) != 1 || !reflect.DeepEqual(role.Rules[0].ResourceNames, want) {
+		t.Fatalf("Role names %v diverged from template list %v", role.Rules[0].ResourceNames, want)
+	}
+}
+
+// An empty list (connection mode or no persistent templates) is still served:
+// the management UI renders its explicit empty state and the Role has no rules.
+func TestSettingsEmptyTemplateListStillServes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		prep func(*configHandler)
+	}{{
+		name: "no templates",
+		prep: func(h *configHandler) { h.dir = testTemplateDir(t, nil) },
+	}, {
+		name: "connection mode",
+		prep: func(h *configHandler) {
+			h.boxes.operatingMode = config.KubernetesExecutionModeConnection
+			h.boxes.pods = nil
+		},
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := settingsHandler(t)
+			tc.prep(h)
+			cfg, err := h.OnConfig(configRequest("settings", "alice"))
+			if err != nil {
+				t.Fatal(err)
+			}
+		env := cfg.Kubernetes.Pod.Spec.Containers[0].Env
+			if len(env) != 2 || env[1].Value != "" {
+				t.Fatalf("empty template list = %+v, want a present-but-empty trusted list", env)
+			}
+			role, err := h.kube.RbacV1().Roles(h.boxes.namespace).Get(
+				context.Background(), cfg.Kubernetes.Pod.Spec.ServiceAccountName, metav1.GetOptions{})
+			if err != nil || len(role.Rules) != 0 {
+				t.Fatalf("empty template list granted rules: %+v, %v", role, err)
+			}
+		})
+	}
+}
+
+// Unreadable/unparsable template files deny the settings response instead of
+// serving a partial row list or stale grants.
+func TestSettingsUnreadableTemplateListDenies(t *testing.T) {
+	h := settingsHandler(t)
+	h.dir = testTemplateDir(t, map[string]string{"ubuntu.yaml": "{}", "broken.yaml": "kubernetes: ["})
+	if _, err := h.OnConfig(configRequest("settings", "alice")); err == nil {
+		t.Fatal("broken template file did not deny settings")
+	}
+	if _, err := h.OnConfig(configRequest("ubuntu", "alice")); err == nil {
+		t.Fatal("broken template file still served an ordinary template")
+	}
 }
 
 func TestSettingsCannotBeOverriddenByATemplateFile(t *testing.T) {

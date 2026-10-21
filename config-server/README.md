@@ -86,10 +86,14 @@ application-shell startup, denies exec/subsystem/env/signal/forwarding, and allo
 channel per transport. The static TUI, image contract, resize and q-only behavior are unchanged.
 
 `DEV_BOX_AUTHENTICATED_OWNER` receives the **raw** verified `authenticatedUsername`; only the TUI
-sanitizes it for display. Empty/whitespace-only identities deny, with no fallback to the SSH login,
-client env, original command or template data. Responses are independent across concurrent owners.
-Settings skips persistent naming/cap listing and carries no `dev.box/owner` label; ordinary
-identity, cap, labels and reconnect behavior are unchanged.
+sanitizes it for display. `DEV_BOX_BOX_TEMPLATES` receives the owner's current ordinary
+**persistent** template names, comma-separated and sorted — the same single walk that computes the
+owner Role's exact `resourceNames`, so the management UI's row list and its authorization can never
+diverge. An empty list is valid (no persistent templates); unreadable or unparsable template files
+deny the settings response instead of serving a stale list. Empty/whitespace-only identities deny,
+with no fallback to the SSH login, client env, original command or template data. Responses are
+independent across concurrent owners. Settings skips persistent naming/cap listing and carries no
+`dev.box/owner` label; ordinary identity, cap, labels and reconnect behavior are unchanged.
 
 The shared base must remain restricted: only `containers`, `securityContext`, `restartPolicy`,
 `terminationGracePeriodSeconds` at pod-spec level. Base pod securityContext permits only
@@ -129,11 +133,11 @@ transactional rollback or immediate revocation of prior grants after an unsucces
 
 The ServiceAccount defaults `automountServiceAccountToken: false`; the synthesized settings **pod**
 sets it **true** and names that account. Kubelet mounts its scoped projected token and CA at
-`/var/run/secrets/kubernetes.io/serviceaccount`. The static TUI does not read/use the token. This
-replaces the historical no-token POC floor with **scoped token only**, not new management actions.
-Three static objects persist per owner, with nothing per connection and no stored token Secret.
-There is no automatic GC; owner retirement/cleanup is an explicit operator decision, including
-active sessions and credentials, not an SSH disconnect or Helm uninstall side effect.
+`/var/run/secrets/kubernetes.io/serviceaccount`. The management TUI reads box state and deletes
+boxes through exactly this projected token — `get`/`delete` on the deterministic names above —
+nothing wider. Three static objects persist per owner, with nothing per connection and no stored
+token Secret. There is no automatic GC; owner retirement/cleanup is an explicit operator decision,
+including active sessions and credentials, not an SSH disconnect or Helm uninstall side effect.
 
 The config server is now trusted to reconcile namespace authorization objects, not just list
 pods. Required namespaced permissions are core pods `list/get/delete`, core serviceaccounts
@@ -143,11 +147,13 @@ get/delete before delegating them; create/get/list alone cannot implement reconc
 required). A compromised config server can affect namespace pods and these authorization objects;
 the owner credential is narrower than the server credential.
 
-**NetworkPolicy remains unchanged: settings cannot reach the cluster API.** Operator-side
-impersonation proves API authorization independently of networking. Mounted-token evidence and
-an optional separately approved operator-side token probe are distinct from an actual request
-originating in settings; the latter remains blocked pending separate network-policy approval.
-Follow [the migration and staged acceptance plan](../tests/settings-code-migration.md).
+**NetworkPolicy: settings reaches exactly the Kubernetes API.** The chart renders one scoped
+exception (`networkPolicy.settingsApiEgress`, see the [chart README](../charts/containerssh/README.md))
+allowing settings pods (`dev.box/application=settings`) to reach the Kubernetes API; ordinary pods
+keep deny-ingress/egress-internet-only. Operator-side impersonation proves API authorization
+independently of networking: mounted-token evidence and a live settings-pod API request are distinct
+seams, and both are approval-gated. Follow
+[the management acceptance plan](../tests/settings-management-migration.md).
 
 ## Build and test locally
 

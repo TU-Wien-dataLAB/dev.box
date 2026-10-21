@@ -83,6 +83,29 @@ networkPolicy:
   #           cidr: 10.2.0.0/16
   #     ports:
   #       - port: 8080
+  # Settings pods (dev.box/application=settings) read box state and delete boxes
+  # through the owner's projected token. This is the single scoped exception to
+  # the egress-internet-only default: a second NetworkPolicy that allows exactly
+  # settings pods to reach the Kubernetes API. Ordinary pods are unchanged.
+  settingsApiEgress:
+    enabled: true
+    # The API peers. The default matches a kubeadm-style control plane (kind):
+    # kube-apiserver static pods in kube-system. The Kubernetes API Service
+    # (kubernetes.default.svc:443) load-balances to them, and policies match
+    # the post-NAT destination pod port, hence 6443 alongside 443. Override for
+    # clusters that front the API differently (e.g. a k3d server node ipBlock).
+    to:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        podSelector:
+          matchLabels:
+            component: kube-apiserver
+    ports:
+      - port: 443
+        protocol: TCP
+      - port: 6443
+        protocol: TCP
 
 # Official Kata Containers installer (Helm dependency, aliased as kata).
 # Requires virtualization/KVM on eligible nodes and cluster-admin permissions.

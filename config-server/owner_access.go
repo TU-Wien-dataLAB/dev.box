@@ -19,19 +19,23 @@ import (
 // ensureOwnerAccess reconciles three static objects per verified owner. The
 // config server holds the pod permissions it delegates, so Kubernetes' normal
 // role-escalation/binding checks apply; no escalate or bind grant is needed.
-func (h *configHandler) ensureOwnerAccess(owner string) (string, error) {
+// templates is the owner's current persistent box template list from the
+// operator-mounted store; it defines both the Role's exact pod names and the
+// settings application's trusted template list.
+func (h *configHandler) ensureOwnerAccess(owner string, templates []string) (string, error) {
 	if h.kube == nil || h.boxes.namespace == "" {
 		return "", fmt.Errorf("settings Kubernetes authorization is not configured")
-	}
-	names, err := h.ownerBoxNames(strings.TrimSpace(owner))
-	if err != nil {
-		return "", err
 	}
 	// Use the same canonicalization as persistent naming, not display sanitization.
 	name := "dev-box-owner-" + shortHash(strings.TrimSpace(owner), 48)
 	meta := metav1.ObjectMeta{Name: name, Namespace: h.boxes.namespace}
 	var rules []rbacv1.PolicyRule
-	if len(names) > 0 {
+	if len(templates) > 0 {
+		names := make([]string, 0, len(templates))
+		for _, template := range templates {
+			names = append(names, boxPodName(strings.TrimSpace(owner), template))
+		}
+		sort.Strings(names)
 		// Empty resourceNames means ALL names in RBAC, not none. A user with
 		// no persistent templates must instead receive a Role with no rules.
 		rules = []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get", "delete"}, ResourceNames: names}}
@@ -50,15 +54,19 @@ func (h *configHandler) ensureOwnerAccess(owner string) (string, error) {
 	return name, nil
 }
 
-// ownerBoxNames uses only the operator's current mounted templates. Never
-// include connection/session applications, settings, or client-supplied names.
-// Parsing failures deny the settings request instead of retaining stale grants.
-func (h *configHandler) ownerBoxNames(owner string) ([]string, error) {
+// persistentTemplates returns the operator's mounted ordinary templates that
+// are eligible persistent boxes, sorted by template name. It is the single
+// source for both the owner Role's exact pod names and the settings
+// application's trusted template list, so the two can never diverge. Never
+// include connection/session applications, settings, or client-supplied
+// names. Parsing failures deny the settings request instead of retaining a
+// stale template list or stale grants.
+func (h *configHandler) persistentTemplates() ([]string, error) {
 	entries, err := os.ReadDir(h.dir)
 	if err != nil {
 		return nil, fmt.Errorf("read authorization templates: %w", err)
 	}
-	names := []string{}
+	templates := []string{}
 	seen := map[string]bool{}
 	for _, entry := range entries {
 		filename := entry.Name()
@@ -80,11 +88,11 @@ func (h *configHandler) ownerBoxNames(owner string) ([]string, error) {
 			return nil, fmt.Errorf("read authorization template %q: %w", template, err)
 		}
 		if h.boxes.enabled() && !templateSelectsNonPersistent(cfg) {
-			names = append(names, boxPodName(owner, template))
+			templates = append(templates, template)
 		}
 	}
-	sort.Strings(names)
-	return names, nil
+	sort.Strings(templates)
+	return templates, nil
 }
 
 func (h *configHandler) ensureOwnerServiceAccount(ctx context.Context, meta metav1.ObjectMeta) error {

@@ -10,7 +10,7 @@ backend**. The deployment target is ContainerSSH's **persistent** execution mode
 connection creates a stable per-user pod, later connections exec into that same pod, and
 disconnecting does not delete it. It consists of:
 
-1. **`charts/containerssh/`** — a Helm chart (v2, `containerssh-0.3.1`, `appVersion: 0.6`) with an optional official Kata Containers dependency that
+1. **`charts/containerssh/`** — a Helm chart (v2, `containerssh-0.4.0`, `appVersion: 0.6`) with an optional official Kata Containers dependency that
    deploys ContainerSSH itself plus optional extras.
 2. **`config-server/`** — a small Go server implementing the ContainerSSH config webhook protocol
    (built on `go.containerssh.io/containerssh` `config/webhook`), serving **pod templates selected
@@ -54,7 +54,7 @@ is for inspecting behavior; source changes use the worktree workflow below.
 dev.box/
 ├── AGENTS.md                  ← this file
 ├── charts/containerssh/       ← the Helm chart
-│   ├── Chart.yaml             (name containerssh, v0.3.1, appVersion 0.6)
+│   ├── Chart.yaml             (name containerssh, v0.4.0, appVersion 0.6)
 │   ├── values.yaml            (everything is configurable from here)
 │   ├── README.md
 │   └── templates/
@@ -65,7 +65,7 @@ dev.box/
 │       ├── service.yaml
 │       ├── serviceaccount.yaml
 │       ├── rbac.yaml          (Role/RoleBinding for user pods in the user-pod namespace)
-│       ├── networkpolicy.yaml (user pods: no ingress, egress internet-only)
+│       ├── networkpolicy.yaml (user pods: no ingress, egress internet-only; settings pods: one scoped API exception)
 │       ├── secret-hostkey.yaml
 │       ├── configserver.yaml  (bundled config server: ConfigMap + Deployment + Service)
 │       ├── authserver.yaml    (bundled auth server: Secret + Deployment + Service; auto-wires auth.*.webhook.url)
@@ -83,6 +83,15 @@ dev.box/
 │   ├── auth_server_test.go    (tests against an in-memory authentik mock)
 │   ├── Dockerfile
 │   ├── go.mod                 (go 1.25.3, requires go.containerssh.io/containerssh v0.6.0 + x/crypto)
+│   └── README.md
+├── settings-tui/              ← the settings management TUI (the only program in its image)
+│   ├── main.go / model.go / view.go   (management model + rendering)
+│   ├── boxes.go               (trusted env parsing, deterministic box naming)
+│   ├── kube.go                (per-name pod get/delete behind a small client interface)
+│   ├── model_test.go          (offline management logic against a fake client)
+│   ├── main_test.go           (executable PTY tests, incl. a stand-in Kubernetes API)
+│   ├── Dockerfile
+│   ├── go.mod                 (go 1.26.0, Bubble Tea v2, stdlib-only Kubernetes client)
 │   └── README.md
 └── tests/
     ├── chart-auth-rendering.sh     (Helm auth fail-fast/render matrix)
@@ -151,11 +160,12 @@ ssh ubuntu@dev.box.example.com
 | `kubernetes.mode` | `persistent` | chart **default**; `connection`/`session` also supported. Persistent requires a config server; `createMissingPods: true` is injected only into persistent responses, never the shared base |
 | `kubernetes.pod` | security hard defaults | unconditionally restricted shared base; heavy fields belong in ordinary templates |
 | `kubernetes.podTemplates` | `[]` | ordinary named templates; needs `configServer.enabled`; `settings` is reserved, never an item here |
-| `settings.image.repository/tag` | see values | only settings pod customization; digest-pin for rollout |
+| `settings.image.repository/tag` | see values | only settings pod customization; digest-pin for rollout (management UI image) |
 | `configServer.enabled` | `false` | deploy the bundled config server + auto-wire `configserver.url` |
 | `configServer.maxPodsPerUser` | `3` | per-owner live-box cap in persistent mode (`0` = disabled); reconnects always pass; list-failure denies |
 | `configserver.*` | url `""` | client-side config-server connection (timeout/TLS/mTLS) |
 | `networkPolicy.enabled` | `true` | backend user pods: deny ingress, egress internet-only (+ kube-dns) |
+| `networkPolicy.settingsApiEgress` | `true` | settings-only egress exception to the Kubernetes API (TCP 443/6443 to kube-system `kube-apiserver` pods by default; override `to`/`ports` per cluster) |
 | `rbac.enabled` | `true` | Role/RoleBinding for pod management in session namespace; config-server reconciliation permissions render when `configServer.enabled` (see scoped-owner RBAC below) |
 | `log.level` | `5` | syslog-numbered (7 debug … 2 crit) |
 
@@ -194,8 +204,16 @@ ssh ubuntu@dev.box.example.com
   template that only sets labels keeps the base pod's containers/spec.
 - **Settings / merge boundary:** `settings` is always code-owned, connection-mode, one session
   per transport, direct `/usr/local/bin/dev-box-settings` (no shell wrapper), PTY/application-shell
-  only; exec/subsystem/env/signal/forwarding denied. UI remains static/read-only. Owner env is the
+  only; exec/subsystem/env/signal/forwarding denied. The TUI is the **management UI**: one row per
+  trusted template (status, uptime, image, runtime, restarts, limits), ~3 s polling, and exactly one
+  action — delete behind a `y`-confirmation naming all three consequences. Owner env is the
   raw server-verified identity (blank denied); display sanitization never changes authorization.
+  `DEV_BOX_BOX_TEMPLATES` carries the owner's ordinary persistent template names from the same walk
+  that computes the Role's `resourceNames` (empty list valid; unreadable templates deny). The TUI
+  recomputes each box's deterministic name with the persistent hashing contract (trimmed owner +
+  NUL + template, pinned by golden tests) and reads/deletes pods only through the owner's projected
+  token. `DEV_BOX_KUBE_API_URL` is the offline-validation override for the Docker smoke; the config
+  server never sets it. Unreachable API ⇒ rows dim, delete disabled, never a crash.
   The shared base spec unconditionally permits only `containers`, `securityContext`,
   `restartPolicy`, `terminationGracePeriodSeconds`. Base pod securityContext permits only
   `runAsNonRoot`, `runAsUser`, `runAsGroup`, `seccompProfile.type`; base metadata permits only
@@ -214,10 +232,15 @@ ssh ubuntu@dev.box.example.com
   `get/list/create/update` in the session namespace, without `bind/escalate`. It must itself hold
   delegated pod `get/delete` for Kubernetes anti-escalation checks; updates are needed to reconcile.
   This is a trust upgrade from list-only access. Three objects persist per owner; GC is explicit
-  operator work only. NetworkPolicy is unchanged and **blocks settings → cluster API**; API
-  authorization via operator impersonation is not proof of network reachability or token use.
+  operator work only. NetworkPolicy adds **exactly one scoped exception**
+  (`networkPolicy.settingsApiEgress`): a second NetworkPolicy allowing settings pods
+  (`dev.box/application=settings`) egress to the Kubernetes API only (default peers: kube-system
+  `kube-apiserver` pods, TCP 443+6443 — Calico matches the post-NAT pod port); ordinary pods keep
+  deny-ingress/egress-internet-only. API authorization via operator impersonation is still not
+  proof of network reachability or token use.
   **Before settings migration, RBAC changes, or acceptance**, read
-  [the migration and staged plan](tests/settings-code-migration.md).
+  [the migration and staged plan](tests/settings-code-migration.md) and for the management UI
+  [the acceptance plan](tests/settings-management-migration.md).
 - **Backend images must contain `containerssh-agent`**: the base pod runs
   `/usr/bin/containerssh-agent wait-signal ...`. Replacing only its image with plain
   `ubuntu:22.04` inherits that command and fails with `stat /usr/bin/containerssh-agent: no such
@@ -249,6 +272,13 @@ ssh ubuntu@dev.box.example.com
 - **Public-key only**: the bundled chart configures no password webhook; the protocol-required
   `OnPassword` implementation always denies. The SSH username intentionally selects the pod
   template and is not compared with the authentik owner; authenticated metadata records the owner.
+- **Known rough edge: disabled SSH methods are still advertised.** Stock ContainerSSH v0.6's
+  `internal/sshserver/serverImpl.go` unconditionally registers password and keyboard-interactive
+  callbacks. OpenSSH may therefore prompt for a password after a key/template denial, although
+  the bundled setup never accepts passwords. This is intentionally retained: no Helm/auth-webhook
+  setting fixes advertisement; changing it requires a ContainerSSH patch and custom image.
+  Client workaround: `PreferredAuthentications=publickey` + `IdentitiesOnly=yes`. `BatchMode=yes`
+  additionally suppresses interactive prompts (including local encrypted-key passphrases).
 - **The bundled auth server is read-only** against authentik. Its service token needs only user-view
   permission.
 - **Config file loading applies struct defaults** (`structutils.Defaults` in
@@ -313,6 +343,10 @@ docker build -t auth-server:dev auth-server/                      # image
 # Live regression (local SSH port-forward + enrolled key + known ubuntu template):
 python3 tests/ssh-template-rejection.py --key ~/.ssh/slurm_tu_wien  # deny within 5s
 
+# Error-message delivery through the real gateway image (Docker only, no cluster):
+tests/gateway-error-messages.sh                                     # denial banners via stub auth webhook
+#   CONTAINERSSH_IMAGE=<ref> tests/gateway-error-messages.sh        # any other image
+
 ```
 
 `tests/chart-config-binary-validation.sh` feeds rendered bases and actual synthesized settings /
@@ -322,6 +356,12 @@ Every valid case must exit 0 without `CORE_CONFIG_ERROR`; parsing alone is not p
 Set `CONTAINERSSH_IMAGE` to validate the intended immutable rollout image.
 
 ## Deployment status
+
+> **Issue #7 (settings management UI) is implemented but NOT deployed.** The management TUI
+> (box rows, delete, scoped API egress, `DEV_BOX_BOX_TEMPLATES`) lives in this repository with all
+> local gates green; rollout and live acceptance are approval-gated per
+> [the management acceptance plan](tests/settings-management-migration.md). Nothing below describes
+> the deployed cluster; the revision-41 baseline is unchanged.
 
 **Current status (2026-10-19):** revision **41**, chart **0.3.3**. Issue #11's code-owned Settings
 migration is deployed with user approval. Config-server is pinned to
@@ -344,19 +384,29 @@ denial banners as well as Settings fixes; PR #10 remains unmerged. Stock v0.6.0 
 This default is not a live image selection. Existing rollout image pins are independent of chart
 defaults. Issue #11 migration and acceptance require [this staged plan](tests/settings-code-migration.md).
 
-**Historical revision-38 baseline (2026-10-16):** revision **38**, chart **0.3.2**, restores the original
-values after approved prototype fixtures. Gateway remains the digest-pinned
-[fork PR #11](https://github.com/TU-Wien-dataLAB/ContainerSSH/pull/11) test image,
-`ghcr.io/tu-wien-datalab/containerssh:pr-11@sha256:529a4f5618be89a56e3714fe9f77cf886a6674131e0cec5f5f1b28841d92beb9`.
-The PR (`settings-change` → `deploy`) merged on 2026-10-16. For historical acceptance,
-read [fixture evidence](tests/settings-fixture-validation.md): guest-image upgrade,
-TUI crash/startup failure, missing-owner SSH denial, cap boundary, restoration,
-and the final policy/resize run passed; ordinary box UID is unchanged. Temporary
-fixtures are removed. Two real enrolled owners and other explicitly listed
-acceptance gaps remain; issue #9 is open. Earlier [non-disruptive evidence](tests/settings-remaining-validation.md)
-covers abrupt-client and actual OpenSSH master cleanup.
-The revision-19 notes below describe the pre-Settings baseline; the
-[revision-20 report](tests/settings-live-validation.md) is historical.
+**Historical revision-40 baseline (2026-10-16):** chart **0.3.2**. The gateway runs the
+digest-pinned [fork PR #10](https://github.com/TU-Wien-dataLAB/ContainerSSH/pull/10) test image
+(`error-messages` → `deploy`),
+`ghcr.io/tu-wien-datalab/containerssh:pr-10@sha256:96519c315ae7810931df2c8b5a974750d3f8fb6007c0aad4fa9b2e6b68394a4d`:
+PR #11 (Settings fixes, merged into `deploy`) plus user-facing auth denial messages — an HTTP 200
+auth-webhook denial with a non-empty `message` becomes a terminal failure delivered to the SSH
+client as a userauth banner (RFC 4252 §5.4) right before `Permission denied`. The PR is **not
+merged**. The bundled auth-server now sends those messages (branch
+`auth-server-error-messages`, image `sha-245b9e2@sha256:36e68dc2…`, digest-pinned since revision
+40 — the stock v0.6.0 `auth/webhook` handler cannot serialize a message, so `auth-server/webhook.go`
+implements the wire contract locally). Live: `ssh unknown@…` prints
+`no pod template matches SSH username 'unknown'` before the denial in ~0.4 s; unenrolled keys print
+`public key is not enrolled for any user`; infrastructure failures stay fail-closed HTTP 500 with
+no message. Rollout regression passed: `ubuntu` positive control (same box, Kata kernel 6.18.35),
+prompt unknown-template rejection, `tests/gateway-error-messages.sh` (stub-webhook image test), and
+a local Docker E2E with the real auth-server + gateway images. Revision 40 was upgraded from the
+chart at `d0a02e6` because `b040bde` (code-owned Settings) rejects the live `settings` pod template
+in `kubernetes.podTemplates` — that value migration completed at revision 41 above. For historical Settings acceptance read
+[fixture evidence](tests/settings-fixture-validation.md) (revision 38, all gates passed) and
+[non-disruptive evidence](tests/settings-remaining-validation.md); two real enrolled owners and
+other explicitly listed acceptance gaps remain; issue #9 is open. The revision-19 notes below
+describe the pre-Settings baseline; the [revision-20 report](tests/settings-live-validation.md) is
+historical.
 
 - Target cluster context: **`container-ssh`** (created; control plane reachable).
   Current default context is `container-ssh` — still pass `--kube-context container-ssh` explicitly
@@ -385,8 +435,9 @@ The revision-19 notes below describe the pre-Settings baseline; the
   on worker `container-ssh-worker-k4v2m-mfq8d`; exec verified Kata guest kernel `6.18.35`.
 - The config server is pinned to immutable tag `sha-270e2fd` (issue #6), image digest
   `sha256:04597f9f6a11c52662ef874d69eb990435ac790de5952e39be005bef28929b19`;
-  auth-server is pinned to `sha-72cadaa`, image digest
-  `sha256:6f1a71ff5c46cc3d88ae967baf9641b057127bddb664118da0fb1644f4fc6baa`.
+  auth-server (revision 40, user-facing denial messages) is pinned to
+  `sha-245b9e2@sha256:36e68dc2e1686378121a37aebff86ff4c28f42ffe127f9903bae2fe30c0e5f73`
+  (previously `sha-72cadaa@sha256:6f1a71ff5c46cc3d88ae967baf9641b057127bddb664118da0fb1644f4fc6baa`).
   The authentik read token and stable host key are mounted
   from existing Secrets (`containerssh-authentik-token`, `containerssh-host-key`).
 - Issue #6 was verified live on 2026-09-30: the config webhook returned HTTP 200 for `ubuntu`

@@ -5,8 +5,14 @@ package main_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,14 +46,20 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func environment(owner string) []string {
+// environment builds a clean environment with the trusted owner; extra adds or
+// overrides further variables (DEV_BOX_*, TERM, NO_COLOR...).
+func environment(owner string, extra ...string) []string {
 	var env []string
 	for _, value := range os.Environ() {
-		if !strings.HasPrefix(value, "DEV_BOX_AUTHENTICATED_OWNER=") && !strings.HasPrefix(value, "TERM=") {
-			env = append(env, value)
+		if strings.HasPrefix(value, "DEV_BOX_") || strings.HasPrefix(value, "TERM=") ||
+			strings.HasPrefix(value, "NO_COLOR=") || strings.HasPrefix(value, "KUBERNETES_") {
+			continue
 		}
+		env = append(env, value)
 	}
-	return append(env, "TERM=xterm-256color", "DEV_BOX_AUTHENTICATED_OWNER="+owner)
+	env = append(env, "TERM=xterm-256color")
+	env = append(env, "DEV_BOX_AUTHENTICATED_OWNER="+owner)
+	return append(env, extra...)
 }
 
 type session struct {
@@ -60,10 +72,10 @@ type session struct {
 	original *term.State
 }
 
-func openTerminal(t *testing.T, owner string, cols, rows uint16) *session {
+func openTerminal(t *testing.T, env []string, cols, rows uint16) *session {
 	t.Helper()
 	cmd := exec.Command(executable)
-	cmd.Env = environment(owner)
+	cmd.Env = env
 	terminal, slave, err := pty.Open()
 	if err != nil {
 		t.Fatal(err)
@@ -124,11 +136,30 @@ func (s *session) text() string {
 	return s.output.String()
 }
 
+// mark records the current output length; textFrom returns only output that
+// arrived after the mark, for asserting what a later render shows.
+func (s *session) mark() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.output.Len()
+}
+
+func (s *session) textFrom(mark int) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return string(s.output.Bytes()[mark:])
+}
+
 func (s *session) expect(t *testing.T, fragments ...string) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	s.expectFrom(t, 0, fragments...)
+}
+
+func (s *session) expectFrom(t *testing.T, mark int, fragments ...string) {
+	t.Helper()
+	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
-		text := s.text()
+		text := s.textFrom(mark)
 		found := true
 		for _, fragment := range fragments {
 			found = found && strings.Contains(text, fragment)
@@ -138,7 +169,7 @@ func (s *session) expect(t *testing.T, fragments ...string) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("terminal did not show %q; output: %q", fragments, s.text())
+	t.Fatalf("terminal did not show %q; output: %q", fragments, s.textFrom(mark))
 }
 
 func (s *session) input(t *testing.T, text string) {
@@ -160,10 +191,157 @@ func (s *session) exit(t *testing.T, success bool) {
 	}
 }
 
+// fakeAPI is a stand-in Kubernetes pod API for offline executable tests: it
+// serves per-name pod gets (200, 404, 403, 500) and deletes, records
+// requests, and requires the bearer token when one is configured.
+type fakeAPI struct {
+	mu        sync.Mutex
+	pods      map[string]any // *podDoc or error status
+	deleted   []string
+	gets      int
+	token     string
+	namespace string
+	server    *httptest.Server
+}
+
+type podDoc struct {
+	name         string
+	phase        string
+	startedAgo   time.Duration
+	terminating  bool
+	restarts     int32
+	image        string
+	runtimeClass string
+	limitsCPU    string
+	limitsMemory string
+}
+
+func newFakeAPI(t *testing.T) *fakeAPI {
+	t.Helper()
+	api := &fakeAPI{pods: map[string]any{}, namespace: "containerssh-sessions"}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/namespaces/", func(w http.ResponseWriter, r *http.Request) {
+		api.mu.Lock()
+		defer api.mu.Unlock()
+		if api.token != "" && r.Header.Get("Authorization") != "Bearer "+api.token {
+			writeStatus(w, http.StatusUnauthorized, "Unauthorized", "credentials rejected")
+			return
+		}
+		rest := strings.TrimPrefix(r.URL.Path, "/api/v1/namespaces/")
+		parts := strings.Split(rest, "/")
+		if len(parts) != 3 || parts[0] != api.namespace || parts[1] != "pods" {
+			http.NotFound(w, r)
+			return
+		}
+		name := parts[2]
+		switch r.Method {
+		case http.MethodGet:
+			api.gets++
+			switch doc := api.pods[name].(type) {
+			case *podDoc:
+				writePod(w, doc)
+			case *statusDoc:
+				writeStatus(w, doc.code, doc.reason, doc.message)
+			default:
+				writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("pods %q not found", name))
+			}
+		case http.MethodDelete:
+			api.deleted = append(api.deleted, name)
+			switch doc := api.pods[name].(type) {
+			case *podDoc:
+				doc.terminating = true
+				writeStatus(w, http.StatusOK, "", "")
+			case *statusDoc:
+				writeStatus(w, doc.code, doc.reason, doc.message)
+			default:
+				writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("pods %q not found", name))
+			}
+		default:
+			writeStatus(w, http.StatusMethodNotAllowed, "NotAllowed", "method not allowed")
+		}
+	})
+	api.server = httptest.NewServer(mux)
+	t.Cleanup(api.server.Close)
+	return api
+}
+
+type statusDoc struct {
+	code    int
+	reason  string
+	message string
+}
+
+func writeStatus(w http.ResponseWriter, code int, reason, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	body := map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "code": code}
+	if reason != "" {
+		body["reason"] = reason
+	}
+	if message != "" {
+		body["message"] = message
+	}
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+func writePod(w http.ResponseWriter, doc *podDoc) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	start := time.Now().Add(-doc.startedAgo).UTC().Format(time.RFC3339)
+	fmt.Fprintf(w, `{
+		"metadata": {"name": %q%s},
+		"spec": {"runtimeClassName": %q, "containers": [{"name": "shell", "image": %q,
+			"resources": {"limits": {"cpu": %q, "memory": %q}}}]},
+		"status": {"phase": %q, "startTime": %q, "containerStatuses": [{"restartCount": %d}]}
+	}`, doc.name, terminationJSON(doc.terminating), doc.runtimeClass, doc.image,
+		doc.limitsCPU, doc.limitsMemory, doc.phase, start, doc.restarts)
+}
+
+func terminationJSON(terminating bool) string {
+	if !terminating {
+		return ""
+	}
+	return fmt.Sprintf(`, "deletionTimestamp": %q`, time.Now().Add(-time.Second).UTC().Format(time.RFC3339))
+}
+
+// setToken configures the bearer token the API requires, race-safely.
+func (a *fakeAPI) setToken(token string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.token = token
+}
+
+// envFor returns the executable environment pointed at the fake API.
+func (a *fakeAPI) envFor(owner, templates string, extra ...string) []string {
+	a.mu.Lock()
+	token, base := a.token, a.server.URL
+	a.mu.Unlock()
+	return append(environment(owner, extra...),
+		"DEV_BOX_KUBE_API_URL="+base,
+		"DEV_BOX_KUBE_API_TOKEN="+token,
+		"DEV_BOX_NAMESPACE=containerssh-sessions",
+		"DEV_BOX_BOX_TEMPLATES="+templates,
+	)
+}
+
+// boxName mirrors the deterministic names the TUI derives.
+func boxName(owner, template string) string {
+	return "box-" + shortHash(owner+"\x00"+template)
+}
+
+func shortHash(value string) string {
+	// Keep in sync with the config server contract; the golden test in the
+	// model tests pins this against the live cluster.
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])[:10]
+}
+
 func TestCommandsAndEscapeShortcutsCannotLeaveTheApplication(t *testing.T) {
-	s := openTerminal(t, "alice.example", 80, 24)
+	s := openTerminal(t, environment("alice.example"), 80, 24)
 	s.expect(t, "q: quit")
-	for _, input := range []string{"\x1a", "\x1b", "\x03\x04", "\x1bq", "\r/bin/sh\rprintf 'DEV_BOX_%s' ESCAPE_EXECUTED\r"} {
+	// Ctrl-Z, Esc, Ctrl-D, "ESC q" as a literal sequence, and a typed shell
+	// command must neither exit the application nor execute anything.
+	for _, input := range []string{"\x1a", "\x1b", "\x04", "\x1bq", "\r/bin/sh\rprintf 'DEV_BOX_%s' ESCAPE_EXECUTED\r"} {
 		s.input(t, input)
 		select {
 		case <-s.done:
@@ -185,11 +363,33 @@ func TestCommandsAndEscapeShortcutsCannotLeaveTheApplication(t *testing.T) {
 	}
 }
 
+func TestCtrlCQuitsFromTheListViewOnly(t *testing.T) {
+	api := newFakeAPI(t)
+	ubuntu := boxName("alice.example", "ubuntu")
+	api.pods[ubuntu] = &podDoc{name: ubuntu, phase: "Running", startedAgo: 2 * time.Hour,
+		restarts: 1, image: "containerssh/containerssh-guest-image",
+		runtimeClass: "kata-qemu-runtime-rs", limitsCPU: "500m", limitsMemory: "1Gi"}
+	s := openTerminal(t, api.envFor("alice.example", "ubuntu", "NO_COLOR=1"), 120, 24)
+	s.expect(t, "Running")
+	s.input(t, "d")
+	s.expect(t, "Delete box")
+	s.input(t, "\x03") // inside a dialog, Ctrl+C only cancels
+	select {
+	case <-s.done:
+		t.Fatal("Ctrl+C quit from inside the dialog")
+	case <-time.After(300 * time.Millisecond):
+	}
+	mark := s.mark()
+	s.input(t, "\x03") // from the list view, Ctrl+C quits
+	s.exit(t, true)
+	_ = mark
+}
+
 func TestOwnerIsTextNotTerminalControl(t *testing.T) {
 	owner := "Björk.李\x1b]52;c;clipboard\a\x1b[31m\r\nINJECTED\u009b32m\u202ebidi\u2028line"
-	s := openTerminal(t, owner, 160, 24)
+	s := openTerminal(t, environment(owner, "NO_COLOR=1"), 160, 24)
 	s.expect(t, "Owner: Björk.李", "q: quit")
-	for _, control := range []string{"\x1b]52;c;clipboard", "\a", "\x1b[31m", "\r\nINJECTED", "\u009b", "\u202e", "\u2028"} {
+	for _, control := range []string{"\x1b]52;c;clipboard", "\a", "\x1b[31m", "\r\nINJECTED", "\x9b", "\u202e", "\u2028"} {
 		if strings.Contains(s.text(), control) {
 			t.Errorf("owner injected control sequence %q into terminal", control)
 		}
@@ -199,30 +399,29 @@ func TestOwnerIsTextNotTerminalControl(t *testing.T) {
 }
 
 func TestSmallTerminalKeepsQuitVisibleAndResizes(t *testing.T) {
-	s := openTerminal(t, "alice.with.a.long.verified.owner.name", 24, 5)
-	s.expect(t, "Settings", "POC", "read-only", "Owner: alice", "q: quit")
-	// Observe subsequent output, not the earlier large/small screen.
+	s := openTerminal(t, environment("alice.with.a.long.verified.owner.name", "NO_COLOR=1"), 24, 5)
+	s.expect(t, "settings", "Owner: alice", "No box templates", "q: quit")
 	s.mu.Lock()
 	s.output.Reset()
 	s.mu.Unlock()
 	if err := pty.Setsize(s.terminal, &pty.Winsize{Cols: 100, Rows: 24}); err != nil {
 		t.Fatal(err)
 	}
-	s.expect(t, "Owner: alice.with.a.long.verified.owner.name", "q: quit")
+	s.expect(t, "dev.box settings", "Owner: alice.with.a.long.verified.owner.name", "No box templates", "q: quit")
 	s.mu.Lock()
 	s.output.Reset()
 	s.mu.Unlock()
 	if err := pty.Setsize(s.terminal, &pty.Winsize{Cols: 20, Rows: 5}); err != nil {
 		t.Fatal(err)
 	}
-	s.expect(t, "read-only", "q: quit")
+	s.expect(t, "No box templates", "q: quit")
 	s.mu.Lock()
 	s.output.Reset()
 	s.mu.Unlock()
 	if err := pty.Setsize(s.terminal, &pty.Winsize{Cols: 12, Rows: 3}); err != nil {
 		t.Fatal(err)
 	}
-	s.expect(t, "Settings", "POC/RO", "q: quit")
+	s.expect(t, "settings", "q: quit")
 	s.input(t, "q")
 	s.exit(t, true)
 }
@@ -266,19 +465,19 @@ func TestWithoutPTYExitsWithHelpfulError(t *testing.T) {
 }
 
 func TestTerminalWaitsForInitialResize(t *testing.T) {
-	s := openTerminal(t, "alice.example", 0, 0)
+	s := openTerminal(t, environment("alice.example", "NO_COLOR=1"), 0, 0)
 	// ContainerSSH learns the agent PID before it sends the initial resize.
 	time.Sleep(200 * time.Millisecond)
 	if err := pty.Setsize(s.terminal, &pty.Winsize{Cols: 80, Rows: 24}); err != nil {
 		t.Fatal(err)
 	}
-	s.expect(t, "Settings", "Owner: alice.example", "q: quit")
+	s.expect(t, "dev.box settings", "Owner: alice.example", "q: quit")
 	s.input(t, "q")
 	s.exit(t, true)
 }
 
 func TestZeroSizedTerminalFailsHelpfully(t *testing.T) {
-	s := openTerminal(t, "alice.example", 0, 0)
+	s := openTerminal(t, environment("alice.example"), 0, 0)
 	s.exit(t, false)
 	s.expect(t, "PTY", "ssh -t")
 }
@@ -303,8 +502,8 @@ func TestNoOwnerFallbackFromClientOrImageIdentity(t *testing.T) {
 }
 
 func TestSimultaneousTerminalsDisplayOnlyTheirOwnOwners(t *testing.T) {
-	alice := openTerminal(t, "alice.example", 80, 24)
-	bob := openTerminal(t, "bob.example", 80, 24)
+	alice := openTerminal(t, environment("alice.example", "NO_COLOR=1"), 80, 24)
+	bob := openTerminal(t, environment("bob.example", "NO_COLOR=1"), 80, 24)
 	alice.expect(t, "Owner: alice.example", "q: quit")
 	bob.expect(t, "Owner: bob.example", "q: quit")
 	if strings.Contains(alice.text(), "bob.example") || strings.Contains(bob.text(), "alice.example") {
@@ -319,7 +518,7 @@ func TestSimultaneousTerminalsDisplayOnlyTheirOwnOwners(t *testing.T) {
 func TestMissingTrustedOwnerFailsClosed(t *testing.T) {
 	for _, owner := range []string{"", " \t\r\n"} {
 		t.Run(fmt.Sprintf("owner=%q", owner), func(t *testing.T) {
-			s := openTerminal(t, owner, 80, 24)
+			s := openTerminal(t, environment(owner), 80, 24)
 			s.exit(t, false)
 			s.expect(t, "DEV_BOX_AUTHENTICATED_OWNER", "missing")
 			if strings.Contains(s.text(), "q: quit") {
@@ -329,9 +528,224 @@ func TestMissingTrustedOwnerFailsClosed(t *testing.T) {
 	}
 }
 
-func TestTerminalShowsReadOnlySettingsAndQExits(t *testing.T) {
-	s := openTerminal(t, "alice.example", 80, 24)
-	s.expect(t, "Settings", "POC", "read-only", "Owner: alice.example", "q: quit")
+// A malformed trusted template list fails closed before the UI opens.
+func TestMalformedTrustedTemplateListFailsClosed(t *testing.T) {
+	for _, templates := range []string{"bad name", "a/b", "ok;rm -rf"} {
+		t.Run(templates, func(t *testing.T) {
+			s := openTerminal(t, environment("alice.example", "DEV_BOX_BOX_TEMPLATES="+templates), 80, 24)
+			s.exit(t, false)
+			s.expect(t, "DEV_BOX_BOX_TEMPLATES", "invalid template name")
+			if strings.Contains(s.text(), "q: quit") {
+				t.Fatal("malformed template list opened the UI")
+			}
+		})
+	}
+}
+
+// Empty trusted template list is valid: the UI shows the empty state.
+func TestEmptyTemplateListRendersEmptyState(t *testing.T) {
+	s := openTerminal(t, environment("alice.example", "NO_COLOR=1", "DEV_BOX_BOX_TEMPLATES="), 100, 24)
+	s.expect(t, "No box templates are available.", "q: quit")
+	s.input(t, "d")
+	s.expect(t, "nothing to delete")
 	s.input(t, "q")
 	s.exit(t, true)
+}
+
+func TestTerminalShowsSettingsAndQExits(t *testing.T) {
+	s := openTerminal(t, environment("alice.example", "NO_COLOR=1"), 80, 24)
+	s.expect(t, "dev.box settings", "Owner: alice.example", "Connection:", "q: quit")
+	s.input(t, "q")
+	s.exit(t, true)
+}
+
+// The management flow against a stand-in Kubernetes API: rows from gets,
+// not-created rows, selection, delete confirm/cancel, refresh, Terminating
+// transition, recreation hint — the real executable, real HTTP client, and
+// real rendering, offline.
+func TestManagementListSelectDeleteAndRecreate(t *testing.T) {
+	api := newFakeAPI(t)
+	api.setToken("test-token")
+	ubuntu := boxName("alice.example", "ubuntu")
+	api.pods[ubuntu] = &podDoc{name: ubuntu, phase: "Running", startedAgo: 2 * time.Hour,
+		restarts: 1, image: "containerssh/containerssh-guest-image",
+		runtimeClass: "kata-qemu-runtime-rs", limitsCPU: "500m", limitsMemory: "1Gi"}
+	s := openTerminal(t, api.envFor("alice.example", "ubuntu,data-engine", "NO_COLOR=1"), 140, 24)
+
+	s.expect(t,
+		"Owner: alice.example",
+		"Connection: Live",
+		"ubuntu",
+		"Running",
+		"up 2h",
+		"containerssh/containerssh-guest-image",
+		"kata-qemu-runtime-rs",
+		"restarts 1",
+		"1Gi/500m",
+		"data-engine",
+		"not created · ssh data-engine@<host>",
+	)
+
+	// Delete is never offered for a box that does not exist: the initially
+	// selected first row (alphabetical) is the not-created data-engine.
+	s.input(t, "d")
+	s.expect(t, "data-engine is not created; log in as data-engine@<host> to create it")
+
+	// j/k and arrows move the selection; the delete dialog always names the
+	// selected box, which is visible proof of the selection (the differential
+	// renderer never rewrites unchanged row text).
+	s.input(t, "j")
+	s.input(t, "d")
+	s.expect(t, "Delete box \"ubuntu\" ("+ubuntu+")?")
+	s.input(t, "n")
+	s.input(t, "k")
+	s.input(t, "d")
+	s.expect(t, "data-engine is not created")
+	s.input(t, "\x1b[B") // down arrow: back to ubuntu
+	s.input(t, "d")
+	s.expect(t, "Delete box \"ubuntu\" ("+ubuntu+")?")
+	s.input(t, "\x1b") // Esc cancels the dialog
+	mark := s.mark()
+	time.Sleep(200 * time.Millisecond)
+	if strings.Contains(s.textFrom(mark), "Delete box") {
+		t.Fatal("Esc left the confirmation dialog open")
+	}
+
+	// r forces a refresh: new gets must arrive.
+	before := api.gets
+	s.input(t, "r")
+	waitFor(t, time.Second, func() bool {
+		api.mu.Lock()
+		defer api.mu.Unlock()
+		return api.gets >= before+2
+	})
+
+	// Cancel keeps the box; the dialog lists all three consequences.
+	s.input(t, "d")
+	s.expect(t, "Delete box \"ubuntu\" ("+ubuntu+")?",
+		"all data on the box's local disk is destroyed",
+		"active sessions in the box are killed",
+		"a fresh box is created on your next login: ssh ubuntu@<host>")
+	s.input(t, "n")
+	mark = s.mark()
+	time.Sleep(200 * time.Millisecond)
+	if strings.Contains(s.textFrom(mark), "Delete box") {
+		t.Fatal("cancel left the confirmation dialog open")
+	}
+	api.mu.Lock()
+	if len(api.deleted) != 0 {
+		t.Fatal("cancel deleted the box")
+	}
+	api.mu.Unlock()
+
+	// Confirm deletes through the API and shows Terminating, then the
+	// not-created row once the pod is gone.
+	s.input(t, "d")
+	s.expect(t, "Delete box")
+	s.input(t, "y")
+	s.expect(t, "Terminating")
+	api.mu.Lock()
+	if len(api.deleted) != 1 || api.deleted[0] != ubuntu {
+		t.Fatalf("deletes = %v", api.deleted)
+	}
+	delete(api.pods, ubuntu)
+	api.mu.Unlock()
+	mark = s.mark()
+	s.expectFrom(t, mark, "not created · ssh ubuntu@<host>")
+	s.input(t, "q")
+	s.exit(t, true)
+}
+
+func TestManagementUnreachableDisablesDelete(t *testing.T) {
+	// A URL nobody answers: the connection degrades honestly, delete is
+	// refused, and the UI stays usable.
+	closed, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := closed.Addr().String()
+	_ = closed.Close()
+	s := openTerminal(t, environment("alice.example", "NO_COLOR=1",
+		"DEV_BOX_KUBE_API_URL=http://"+address,
+		"DEV_BOX_KUBE_NAMESPACE=containerssh-sessions",
+		"DEV_BOX_BOX_TEMPLATES=ubuntu"), 120, 24)
+	s.expect(t, "Connection: Unreachable", "unreachable", "q: quit")
+	s.input(t, "d")
+	s.expect(t, "delete is unavailable")
+	s.input(t, "y") // never confirmable without a dialog
+	s.input(t, "q")
+	s.exit(t, true)
+}
+
+func TestManagementPartialAndForbiddenRows(t *testing.T) {
+	api := newFakeAPI(t)
+	ubuntu := boxName("alice.example", "ubuntu")
+	api.pods[ubuntu] = &statusDoc{code: http.StatusForbidden, reason: "Forbidden", message: "grants changed"}
+	s := openTerminal(t, api.envFor("alice.example", "ubuntu,data-engine", "NO_COLOR=1"), 130, 24)
+	s.expect(t, "Connection: Partial", "ubuntu", "reconnect")
+	// The forbidden row explains how to recover: reconnect settings.
+	s.expect(t, "authorization changed")
+	s.input(t, "q")
+	s.exit(t, true)
+}
+
+func TestManagementDumbTerminalRendersPlainText(t *testing.T) {
+	api := newFakeAPI(t)
+	ubuntu := boxName("alice.example", "ubuntu")
+	api.pods[ubuntu] = &podDoc{name: ubuntu, phase: "Running", startedAgo: time.Hour,
+		restarts: 0, image: "guest-image", runtimeClass: "kata-qemu-runtime-rs",
+		limitsCPU: "1", limitsMemory: "2Gi"}
+	s := openTerminal(t, api.envFor("alice.example", "ubuntu", "TERM=dumb"), 120, 24)
+	s.expect(t, "Running", "Owner: alice.example")
+	for _, sgr := range []string{"\x1b[31m", "\x1b[32m", "\x1b[33m", "\x1b[2m", "\x1b[1m"} {
+		if strings.Contains(s.text(), sgr) {
+			t.Fatalf("dumb terminal received color sequence %q", sgr)
+		}
+	}
+	s.input(t, "q")
+	s.exit(t, true)
+}
+
+func TestManagementRejectsMissingToken(t *testing.T) {
+	api := newFakeAPI(t)
+	api.setToken("secret")
+	ubuntu := boxName("alice.example", "ubuntu")
+	api.pods[ubuntu] = &podDoc{name: ubuntu, phase: "Running", startedAgo: time.Hour,
+		restarts: 0, image: "guest-image", runtimeClass: "kata-qemu-runtime-rs",
+		limitsCPU: "1", limitsMemory: "2Gi"}
+	env := environment("alice.example", "NO_COLOR=1",
+		"DEV_BOX_KUBE_API_URL="+api.server.URL,
+		"DEV_BOX_NAMESPACE=containerssh-sessions",
+		"DEV_BOX_BOX_TEMPLATES=ubuntu") // no DEV_BOX_KUBE_API_TOKEN
+	s := openTerminal(t, env, 120, 24)
+	s.expect(t, "Connection: Unreachable")
+	s.input(t, "q")
+	s.exit(t, true)
+}
+
+func TestManagementColorsAreUsedOnColorTerminals(t *testing.T) {
+	api := newFakeAPI(t)
+	ubuntu := boxName("alice.example", "ubuntu")
+	api.pods[ubuntu] = &podDoc{name: ubuntu, phase: "Running", startedAgo: time.Hour,
+		restarts: 0, image: "guest-image", runtimeClass: "kata-qemu-runtime-rs",
+		limitsCPU: "1", limitsMemory: "2Gi"}
+	s := openTerminal(t, api.envFor("alice.example", "ubuntu"), 120, 24)
+	s.expect(t, "Running")
+	if !strings.Contains(s.text(), "\x1b[32m") {
+		t.Fatal("a color terminal did not receive the green live/running tint")
+	}
+	s.input(t, "q")
+	s.exit(t, true)
+}
+
+func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("condition not met in time")
 }

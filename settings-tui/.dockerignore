@@ -2,6 +2,6 @@
 !Dockerfile
 !go.mod
 !go.sum
-!main.go
+!*.go
 !passwd
 !group

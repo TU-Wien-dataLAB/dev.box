@@ -81,6 +81,7 @@ validate_config() {
       abort "settings inherited base pod identity" if pod.dig("metadata", "name") || pod.dig("metadata", "labels", "dev.box/owner")
       abort "settings container floor lost" unless pod.dig("spec", "containers").size == 1 && pod.dig("spec", "containers", 0, "securityContext", "readOnlyRootFilesystem") == true
       abort "owner plumbing lost" unless pod.dig("spec", "containers", 0, "env").any? { |e| e["name"] == "DEV_BOX_AUTHENTICATED_OWNER" && e["value"] == "alice" }
+      abort "box template plumbing lost" unless pod.dig("spec", "containers", 0, "env").any? { |e| e["name"] == "DEV_BOX_BOX_TEMPLATES" && e["value"] == "ubuntu" }
     ' "$tmp/dump-${label}.json"
   fi
   printf 'OK   real ContainerSSH binary accepts %s config and preserves RuntimeClass\n' "$label"
