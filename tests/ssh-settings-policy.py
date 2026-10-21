@@ -263,7 +263,7 @@ def main():
                 t.request(ch, "env", (("string", name), ("string", value)), label=f"pre-start env {name}")
         t.request(ch, "shell", expected=True)
         management_hint = r"d delete|· d ·"
-        # The C4 footer shares one line with the key hints, so narrow terminals
+        # The footer shares one line with the key hints, so narrow terminals
         # clip the verified owner ("Owner: ma… · Live"). Require the full
         # labeled owner only when the footer fits (>= 80 cols), else a labeled
         # nonempty prefix. Spoofed/other owners must never appear at any width.

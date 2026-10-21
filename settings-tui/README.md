@@ -5,8 +5,9 @@ Wish, no shell — there is no shell in the image). Over `ssh -t settings@host` 
 master–detail screen — one master row per box template published for the verified owner
 (name left, state right), and a detail pane for the selected box with its status strip
 (status, uptime, restarts) and ledger (image, runtime class, resource requests and limits) —
-refreshed every few seconds from the Kubernetes API, plus a per-owner box-cap line. It offers
-exactly one management action: **delete** (confirm with `y`).
+refreshed every few seconds from the Kubernetes API, plus a per-owner box-cap line. Both panes
+share the body height: they close on the same line and the footer sits at the terminal bottom.
+It offers exactly one management action: **delete** (confirm with `y`).
 
 ## Build, run, and check locally
 

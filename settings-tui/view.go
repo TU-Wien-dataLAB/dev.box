@@ -5,11 +5,12 @@ package main
 // is sanitized to printable runes before it reaches a terminal, and every
 // line is width-truncated.
 //
-// The normal layout is master–detail (validated as prototype "C4"): a master
+// The normal layout is master–detail: a master
 // pane listing each trusted template with only its state, footed by the
 // per-owner box cap, and a detail pane for the selected box with a status
 // strip (status, uptime, restarts) over a ledger (image, runtime, requests,
-// limits). The delete confirmation is a centered popup over a blank body.
+// limits). Both panes share the taller pane's height. The delete confirmation
+// is a centered popup over a blank body.
 // Terminals without room for the panes collapse to the older single-column
 // rows, then compact headers, and at one/two rows the footer keeps the quit
 // hint; the footer always carries the owner and connection when it fits.
@@ -129,7 +130,7 @@ func (m settingsModel) renderLines() []string {
 	// The master–detail layout needs something to list and room for the
 	// master pane; everything smaller falls through to the older layouts.
 	if len(m.rows) > 0 && budget >= 6 {
-		if lines, ok := m.c4Lines(style, budget); ok {
+		if lines, ok := m.masterDetailLines(style, budget); ok {
 			if m.message != "" {
 				lines = append(lines, style.red(sanitize(m.message)))
 			}
@@ -242,31 +243,36 @@ func scrollRows(rows []string, visible, selected int) []string {
 	return rows[top : top+visible]
 }
 
-// c4Lines renders the master–detail body (or its centered delete popup) and
-// reports whether the layout fits at all.
-func (m settingsModel) c4Lines(style styler, budget int) ([]string, bool) {
+// masterDetailLines renders the master–detail body (or its centered delete
+// popup) and reports whether the layout fits at all. Both panes fill the body
+// budget: blank rows grow above each pane's footed block, so the boxes close
+// on the same line and the footer sits at the terminal bottom.
+func (m settingsModel) masterDetailLines(style styler, budget int) ([]string, bool) {
 	if m.dialog != dialogNone {
 		if budget >= 8 {
-			return m.c4Popup(style, budget)
+			return m.deletePopup(style, budget)
 		}
 		return nil, false
 	}
-	masterInner, detailInner := m.c4Geometry(budget)
+	masterInner, detailInner := m.paneWidths(budget)
 	if masterInner == 0 {
 		return nil, false
 	}
 	master := m.masterPane(style, masterInner, budget)
+	master = stretchPane(master, budget-len(master), masterInner)
 	if detailInner > 0 {
-		return zipPanes(master, m.detailPane(style, detailInner, budget)), true
+		detail := m.detailPane(style, detailInner, budget)
+		detail = stretchPane(detail, budget-len(detail), detailInner)
+		return zipPanes(master, detail), true
 	}
 	return master, true
 }
 
-// c4Geometry returns the master and detail inner widths (detail 0 when the
+// paneWidths returns the master and detail inner widths (detail 0 when the
 // detail pane does not fit; both 0 when even the master pane cannot render).
 // The detail width covers the widest row so it does not jump between
 // selections.
-func (m settingsModel) c4Geometry(budget int) (int, int) {
+func (m settingsModel) paneWidths(budget int) (int, int) {
 	templateWidth := 6
 	for _, row := range m.rows {
 		if n := len(row.template); n > templateWidth {
@@ -428,8 +434,9 @@ func (m settingsModel) detailPane(style styler, inner, budget int) []string {
 			ledger = append(ledger, style.dim(padTo(entry.label, ledgerLabelWidth))+entry.value)
 		}
 		// Borders + separator + strip + ledger is the full pane; only the
-		// honesty line may be dropped when the pane does not fit.
-		if honesty != "" && len(strip)+len(ledger)+3 > budget {
+		// honesty line may be dropped when the pane does not fit (the check
+		// counts the honesty line itself).
+		if honesty != "" && len(strip)+len(ledger)+4 > budget {
 			honesty = ""
 		}
 		for _, line := range strip {
@@ -446,9 +453,9 @@ func (m settingsModel) detailPane(style styler, inner, budget int) []string {
 	return append(lines, paneBottom(inner))
 }
 
-// c4Popup renders the delete confirmation as a popup centered over a blank
+// deletePopup renders the delete confirmation as a popup centered over a blank
 // body. All three consequences are always stated.
-func (m settingsModel) c4Popup(style styler, budget int) ([]string, bool) {
+func (m settingsModel) deletePopup(style styler, budget int) ([]string, bool) {
 	row := m.rows[clamp(m.selected, len(m.rows))]
 	content := []string{
 		style.bold(`Delete box "` + sanitize(row.template) + `" (` + row.name + `)?`),
@@ -482,6 +489,32 @@ func (m settingsModel) c4Popup(style styler, budget int) ([]string, bool) {
 		lines = append(lines, indent+line)
 	}
 	return lines, true
+}
+
+// stretchPane grows a pane by blank inner lines above its footed block —
+// everything from the pane's separator (the master cap separator, the detail
+// ledger separator) down to its bottom border — so paired panes can close on
+// the same line and fill the body budget. A pane without a separator pads
+// above its bottom border. Content lines always start with the pane's side
+// border, so the separator is unambiguous.
+func stretchPane(lines []string, grow, inner int) []string {
+	if grow <= 0 {
+		return lines
+	}
+	at := len(lines) - 1
+	for i, line := range lines {
+		if strings.HasPrefix(line, "├") {
+			at = i
+			break
+		}
+	}
+	stretched := make([]string, 0, len(lines)+grow)
+	stretched = append(stretched, lines[:at]...)
+	blank := paneLine("", inner)
+	for i := 0; i < grow; i++ {
+		stretched = append(stretched, blank)
+	}
+	return append(stretched, lines[at:]...)
 }
 
 // zipPanes joins two panes side by side, one gutter column apart, padding

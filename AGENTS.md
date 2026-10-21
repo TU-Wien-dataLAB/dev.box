@@ -205,10 +205,12 @@ ssh ubuntu@dev.box.example.com
 - **Settings / merge boundary:** `settings` is always code-owned, connection-mode, one session
   per transport, direct `/usr/local/bin/dev-box-settings` (no shell wrapper), PTY/application-shell
   only; exec/subsystem/env/signal/forwarding denied. The TUI is the **management UI** (master–detail,
-  validated as HTML prototype "C4" on a throwaway branch): master rows carry only the template
+  validated as HTML prototypes on a throwaway branch): master rows carry only the template
   name (left) and the state word (right); the selected box's detail pane carries a status strip
   (status, uptime, restarts) over a ledger (image, runtime, requests, limits); the master pane is
-  footed by the per-owner cap line `created N/max`; ~3 s polling; and exactly one action — delete
+  footed by the per-owner cap line `created N/max`; both panes fill the body budget — blank rows
+  grow above each pane's footed block, so the boxes close on one line and the footer sits at the
+  terminal bottom; ~3 s polling; and exactly one action — delete
   behind a centered `y`-confirmation popup naming all three consequences. Owner env is the
   raw server-verified identity (blank denied); display sanitization never changes authorization.
   `DEV_BOX_BOX_TEMPLATES` carries the owner's ordinary persistent template names from the same walk
@@ -365,7 +367,7 @@ Set `CONTAINERSSH_IMAGE` to validate the intended immutable rollout image.
 ## Deployment status
 
 **Current status (2026-10-21, later):** revision **45**, chart **0.4.1**. Issue #7's settings TUI
-now runs the validated **C4 master–detail layout** (HTML prototypes on branch
+now runs the validated **master–detail layout** (HTML prototypes on branch
 `prototype/settings-tui-c4`; captured answer on the issue). The Settings guest runs
 `settings-tui:sha-5ee5ec1c283dfaec23e815167c5b7d65c5231aad@sha256:219f07e4…`, config-server runs
 `sha-5ee5ec1@sha256:c1f051ee…` (both from rollout commit `5ee5ec1`; this push triggered both image
@@ -376,13 +378,16 @@ master pane (name + state only, `created N/max` cap line from `DEV_BOX_MAX_BOXES
 new config-server), the detail strip/ledger (STATUS/UPTIME/RESTARTS over IMAGE/RUNTIME/REQUESTS/
 LIMITS), and the centered delete popup; the footer carries keys + verified owner + connection and
 **clips the owner below ~80 cols** (probe predicates are width-aware). Live gates all passed:
-C4 screen at 100×24, popup open/cancel (nothing deleted; delete+recreate stays live-accepted from
-revision 44 — full management flow exercised against the new image in the Docker smoke), policy
-suite 82 PASS, lifecycle suite PASS, unknown-template rejection 0.42 s, ordinary box UID
-`cd0c5a5a-…` unchanged. **Read [live evidence and caveats](tests/settings-c4-2026-10-21.md)**:
-the TUI cap count is advisory (its Role grants no pod list; the config server's check is
-authoritative), differential-renderer splits cap-line fragments in tests, #10 (two real owners)
-gates pre-alpha, #12 (PVC) and #13 (metrics) remain open.
+master–detail screen at 100×24, popup open/cancel (nothing deleted; delete+recreate stays
+live-accepted from revision 44 — full management flow exercised against the new image in the
+Docker smoke), policy suite 82 PASS, lifecycle suite PASS, unknown-template rejection 0.42 s,
+ordinary box UID `cd0c5a5a-…` unchanged. **Read [live evidence and caveats]
+(tests/settings-c4-2026-10-21.md)**: the TUI cap count is advisory (its Role grants no pod list;
+the config server's check is authoritative), differential-renderer splits cap-line fragments in
+tests, #10 (two real owners) gates pre-alpha, #12 (PVC) and #13 (metrics) remain open.
+**Revision 45 renders content-height panes; full-height equal panes (both boxes close on one
+line, footer at the terminal bottom) landed in the repo after revision 45 and awaits the next
+settings-tui image rollout.**
 
 **Historical revision-44 baseline (2026-10-21, earlier):** revision **44**, chart **0.4.0**. Issue #7's settings management
 UI is **deployed and live-accepted** with user approval. The Settings guest runs

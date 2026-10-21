@@ -495,3 +495,101 @@ func TestCapLineCountsExistingBoxes(t *testing.T) {
 		t.Fatalf("never-seen rows counted toward the cap:\n%s", view(mf))
 	}
 }
+
+// TestPanesShareHeight pins the master and detail panes to the taller pane's
+// height: both boxes close on the same line, and the render never exceeds the
+// terminal height.
+func TestPanesShareHeight(t *testing.T) {
+	// bottoms returns the indexes of all lines containing a pane bottom
+	// border, and how many borders they carry.
+	bottoms := func(text string) ([]int, int) {
+		var lines []int
+		count := 0
+		for i, line := range strings.Split(text, "\n") {
+			if n := strings.Count(line, "└"); n > 0 {
+				lines = append(lines, i)
+				count += n
+			}
+		}
+		return lines, count
+	}
+	for _, tc := range []struct {
+		name          string
+		width, height int
+		templates     []string
+		runningPods   []string // templates with a running pod
+	}{
+		// A data detail pane (strip + ledger) is the taller pane: the master
+		// grows blank rows above its cap separator.
+		{"detail taller", 120, 24, []string{"ubuntu", "data-engine"}, []string{"ubuntu"}},
+		// A state-only detail pane is the shorter one: the detail grows blank
+		// rows above its bottom border.
+		{"master taller", 120, 24, []string{"ubuntu", "data-lab", "tumbleweed", "kata-smoke"}, nil},
+		// A scrolled master pane is the taller one at short heights.
+		{"scrolled master", 120, 14, []string{"a", "b", "c", "d", "e", "f", "g", "h"}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &fakeClient{pods: map[string]*podInfo{}}
+			for _, template := range tc.runningPods {
+				name := boxPodName("alice", template)
+				client.pods[name] = runningPod(name)
+			}
+			m := newModel("alice", tc.templates, 3, client, tc.width, tc.height)
+			m = driveRefresh(t, m)
+			text := view(m)
+			lines := strings.Split(text, "\n")
+			if len(lines) != tc.height {
+				t.Fatalf("rendered %d lines for a %d-row terminal:\n%s", len(lines), tc.height, text)
+			}
+			bottom, count := bottoms(text)
+			// Detail needs width for the strip; narrow cases are master-only.
+			if tc.width >= 100 {
+				if len(bottom) != 1 || count != 2 {
+					t.Fatalf("panes do not close on one shared line: bottoms %v (borders %d):\n%s", bottom, count, text)
+				}
+			} else if len(bottom) != 1 || count != 1 {
+				t.Fatalf("master pane bottom not on one line: bottoms %v (borders %d):\n%s", bottom, count, text)
+			}
+		})
+	}
+
+	// The cap line stays footed: it is the last content line of the master
+	// pane, directly above the shared bottom border.
+	ubuntu := boxPodName("alice", "ubuntu")
+	client := &fakeClient{pods: map[string]*podInfo{ubuntu: runningPod(ubuntu)}}
+	m := newModel("alice", []string{"ubuntu", "data-engine"}, 3, client, 120, 24)
+	m = driveRefresh(t, m)
+	text := view(m)
+	lines := strings.Split(text, "\n")
+	bottom, _ := bottoms(text)
+	if len(bottom) != 1 || !strings.Contains(lines[bottom[0]-1], "created 1/3") {
+		t.Fatalf("cap line not footed above the pane bottom:\n%s", text)
+	}
+
+	// The honesty line still drops when the pane does not fit: it needs one
+	// body line more than the strip+ledger pane, so a 10-row terminal drops it
+	// while an 11-row one keeps it — both fill their height exactly.
+	m = newModel("alice", []string{"ubuntu"}, 3, client, 120, 10)
+	m = driveRefresh(t, m) // the row carries live data
+	client.failures = map[string]error{ubuntu: errors.New("connection refused")}
+	m = driveRefresh(t, m) // stale row: last-known data plus honesty line
+	text = view(m)
+	if n := len(strings.Split(text, "\n")); n != 10 {
+		t.Fatalf("stale detail at 120x10 rendered %d lines:\n%s", n, text)
+	}
+	if strings.Contains(text, honestyLastKnown) {
+		t.Fatalf("honesty line rendered without room at 120x10:\n%s", text)
+	}
+	client.failures = nil
+	m = newModel("alice", []string{"ubuntu"}, 3, client, 120, 11)
+	m = driveRefresh(t, m) // the row carries live data
+	client.failures = map[string]error{ubuntu: errors.New("connection refused")}
+	m = driveRefresh(t, m) // stale row: last-known data plus honesty line
+	text = view(m)
+	if n := len(strings.Split(text, "\n")); n != 11 {
+		t.Fatalf("stale detail at 120x11 rendered %d lines:\n%s", n, text)
+	}
+	if !strings.Contains(text, honestyLastKnown) {
+		t.Fatalf("stale detail lost its honesty line at 120x11:\n%s", text)
+	}
+}
