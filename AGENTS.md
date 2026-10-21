@@ -10,7 +10,7 @@ backend**. The deployment target is ContainerSSH's **persistent** execution mode
 connection creates a stable per-user pod, later connections exec into that same pod, and
 disconnecting does not delete it. It consists of:
 
-1. **`charts/containerssh/`** — a Helm chart (v2, `containerssh-0.4.2`, `appVersion: 0.6`) with an optional official Kata Containers dependency that
+1. **`charts/containerssh/`** — a Helm chart (v2, `containerssh-0.4.3`, `appVersion: 0.6`) with an optional official Kata Containers dependency that
    deploys ContainerSSH itself plus optional extras.
 2. **`config-server/`** — a small Go server implementing the ContainerSSH config webhook protocol
    (built on `go.containerssh.io/containerssh` `config/webhook`), serving **pod templates selected
@@ -368,14 +368,15 @@ Set `CONTAINERSSH_IMAGE` to validate the intended immutable rollout image.
 
 ## Deployment status
 
-**Current status (2026-10-21, latest):** revision **46**, chart **0.4.2**. Issue #7's settings TUI
+**Current status (2026-10-21, latest):** revision **47**, chart **0.4.3**. Issue #7's settings TUI
 runs the validated **master–detail layout** (HTML prototypes on branch
-`prototype/settings-tui-c4`; captured answer on the issue) with **full-height equal panes**.
+`prototype/settings-tui-c4`; captured answer on the issue) with **full-height equal panes** and a
+**detail pane that fills the remaining width**.
 The Settings guest runs
-`settings-tui:sha-f0b776cc6e36ee44f3db4e8a3dfe0bebf2e2f9ec@sha256:371f2cb1…` (from commit
-`f0b776c`; panes fill the body budget — blank rows grow above each pane's footed block, boxes
-close on one line, footer at the terminal bottom; honesty line now needs budget ≥ strip+ledger+4,
-fixing a 10-row overflow), config-server runs
+`settings-tui:sha-4802c39db9b28f20c6309e0078066e309950f6ab@sha256:18efc8cb…` (from commit
+`4802c39`; the detail pane's blank rows grow inside its ledger section below the separator — strip
+tight at top, ledger rows footed — and the detail pane spans the width left of the master pane;
+the master stretch above the cap block is unchanged), config-server runs
 `sha-5ee5ec1@sha256:c1f051ee…` (both from rollout commit `5ee5ec1`; this push triggered both image
 workflows and they were additionally dispatched, racing two builds per tag — use one or the other;
 config-server tags are 7-char short SHAs, settings tags are full SHAs); gateway and auth-server
@@ -391,12 +392,14 @@ ordinary box UID `cd0c5a5a-…` unchanged. **Read [live evidence and caveats]
 (tests/settings-c4-2026-10-21.md)**: the TUI cap count is advisory (its Role grants no pod list;
 the config server's check is authoritative), differential-renderer splits cap-line fragments in
 tests, #10 (two real owners) gates pre-alpha, #12 (PVC) and #13 (metrics) remain open.
-**Revision 45 rendered content-height panes; revision 46 is the full-height equal-pane rollout
-(f0b776c): image published by the push-triggered workflow (no dispatch — avoid racing two builds
-per tag), Docker smoke all-pass against the published image, live gates green (100×24 screen peek
-with both boxes closing on one line and the footer on the last row, popup unchanged, policy suite
-82 PASS with the new image observed in-pod, lifecycle suite PASS, unknown-template rejection
-0.51 s, ordinary box UID `cd0c5a5a-…` unchanged).**
+**Revision 45 rendered content-height panes; revision 46 (f0b776c) rolled out full-height equal
+panes and revision 47 (4802c39) moved the detail stretch into the ledger section and filled the
+detail pane width. Both followed the same flow: image published by the push-triggered workflow (no
+dispatch — avoid racing two builds per tag), Docker smoke all-pass against the published image,
+live gates green (screen peek, policy suite 82 PASS with the new image observed in-pod, lifecycle
+suite PASS, unknown-template rejection ≤ 0.5 s, ordinary box UID `cd0c5a5a-…` unchanged). For the
+revision-46/47 screens a `pyte` terminal emulator is the reliable PTY peek — Bubble Tea's
+differential renderer emits ECH/CUF cell sequences a naive line-based parser mishandles.**
 
 **Historical revision-45 baseline (2026-10-21, earlier):** revision **45**, chart **0.4.1**. The
 `f0b776c` predecessor `5ee5ec1` deployed the master–detail layout with content-height panes:
