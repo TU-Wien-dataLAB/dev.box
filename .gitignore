@@ -1,0 +1,4 @@
+# Local build artifacts
+settings-tui/settings-tui
+config-server/config-server
+auth-server/auth-server
