@@ -343,6 +343,18 @@ def main():
             host_port = published.split(":")[-1]
             require(host_port.isdigit(), f"fake API port not published: {published!r}")
 
+            # Wait for the fake API to listen so the UI's first paint is a
+            # deterministic Live state rather than a startup-race flash (the
+            # initial full paint must contain the contiguous created N/max line).
+            deadline = time.monotonic() + 10
+            while True:
+                try:
+                    with urllib.request.urlopen(f"http://127.0.0.1:{host_port}/_admin/gets", timeout=1):
+                        break
+                except OSError:
+                    require(time.monotonic() < deadline, "fake API never became ready")
+                    time.sleep(0.1)
+
             def api_env(templates="ubuntu,data-engine", token="smoke-token"):
                 env = ["-e", "NO_COLOR=1",
                        "-e", f"{TEMPLATES_ENV}={templates}",
@@ -384,7 +396,10 @@ def main():
                     "data-engine", "not created",
                     "ubuntu", "Running",
                     "ssh data-engine@<host> creates this box",
-                    "created 1/2",
+                    # The differential renderer repaints only the count cells,
+                    # so the count and the filled bar cells arrive separately
+                    # from the "created" label painted in the first frame.
+                    "1/2", "█████",
                 )
                 # Selection and cancel: the initially selected data-engine is
                 # not created, so d explains instead of deleting.

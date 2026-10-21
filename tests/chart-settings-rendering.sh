@@ -31,7 +31,7 @@ ruby -ryaml -rjson -e '
   abort "settings must not be rendered as a template file" unless templates.keys == ["ubuntu.yaml"]
   server = docs.find { |d| d["kind"] == "Deployment" && d.dig("metadata", "name").end_with?("-config-server") }
   env = server.dig("spec", "template", "spec", "containers", 0, "env").to_h { |e| [e.fetch("name"), e["value"]] }
-  abort "wrong settings image default" unless env["CONTAINERSSH_SETTINGS_IMAGE"] == "ghcr.io/tu-wien-datalab/dev.box/settings-tui:sha-901d8a7eb8092db87b4fbd44fbed64beb74c1de3@sha256:08de4f9e7d47a5928b147591e4349bbb0183483920bbcd29fd13d2730841c1f2"
+  abort "wrong settings image default" unless env["CONTAINERSSH_SETTINGS_IMAGE"] == "ghcr.io/tu-wien-datalab/dev.box/settings-tui:sha-5ee5ec1c283dfaec23e815167c5b7d65c5231aad@sha256:219f07e4563a316b2f50833c43ca5c5cc3bae54ec990b720346bfd1dd4de92b1"
   abort "template directory not authoritative" unless env["CONTAINERSSH_CONFIG_DIR"] == "/config" && !env.keys.any? { |key| key.include?("TEMPLATE") }
   abort "template directory is not mounted" unless server.dig("spec", "template", "spec", "volumes").any? { |v| v.dig("configMap", "name") == "settings-containerssh-templates" }
   ubuntu = YAML.load(templates.fetch("ubuntu.yaml"))

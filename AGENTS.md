@@ -10,7 +10,7 @@ backend**. The deployment target is ContainerSSH's **persistent** execution mode
 connection creates a stable per-user pod, later connections exec into that same pod, and
 disconnecting does not delete it. It consists of:
 
-1. **`charts/containerssh/`** — a Helm chart (v2, `containerssh-0.4.0`, `appVersion: 0.6`) with an optional official Kata Containers dependency that
+1. **`charts/containerssh/`** — a Helm chart (v2, `containerssh-0.4.1`, `appVersion: 0.6`) with an optional official Kata Containers dependency that
    deploys ContainerSSH itself plus optional extras.
 2. **`config-server/`** — a small Go server implementing the ContainerSSH config webhook protocol
    (built on `go.containerssh.io/containerssh` `config/webhook`), serving **pod templates selected
@@ -364,7 +364,27 @@ Set `CONTAINERSSH_IMAGE` to validate the intended immutable rollout image.
 
 ## Deployment status
 
-**Current status (2026-10-21):** revision **44**, chart **0.4.0**. Issue #7's settings management
+**Current status (2026-10-21, later):** revision **45**, chart **0.4.1**. Issue #7's settings TUI
+now runs the validated **C4 master–detail layout** (HTML prototypes on branch
+`prototype/settings-tui-c4`; captured answer on the issue). The Settings guest runs
+`settings-tui:sha-5ee5ec1c283dfaec23e815167c5b7d65c5231aad@sha256:219f07e4…`, config-server runs
+`sha-5ee5ec1@sha256:c1f051ee…` (both from rollout commit `5ee5ec1`; this push triggered both image
+workflows and they were additionally dispatched, racing two builds per tag — use one or the other;
+config-server tags are 7-char short SHAs, settings tags are full SHAs); gateway and auth-server
+pins are unchanged. Chart defaults pin the new settings image; chart 0.4.1. The TUI shows the
+master pane (name + state only, `created N/max` cap line from `DEV_BOX_MAX_BOXES` injected by the
+new config-server), the detail strip/ledger (STATUS/UPTIME/RESTARTS over IMAGE/RUNTIME/REQUESTS/
+LIMITS), and the centered delete popup; the footer carries keys + verified owner + connection and
+**clips the owner below ~80 cols** (probe predicates are width-aware). Live gates all passed:
+C4 screen at 100×24, popup open/cancel (nothing deleted; delete+recreate stays live-accepted from
+revision 44 — full management flow exercised against the new image in the Docker smoke), policy
+suite 82 PASS, lifecycle suite PASS, unknown-template rejection 0.42 s, ordinary box UID
+`cd0c5a5a-…` unchanged. **Read [live evidence and caveats](tests/settings-c4-2026-10-21.md)**:
+the TUI cap count is advisory (its Role grants no pod list; the config server's check is
+authoritative), differential-renderer splits cap-line fragments in tests, #10 (two real owners)
+gates pre-alpha, #12 (PVC) and #13 (metrics) remain open.
+
+**Historical revision-44 baseline (2026-10-21, earlier):** revision **44**, chart **0.4.0**. Issue #7's settings management
 UI is **deployed and live-accepted** with user approval. The Settings guest runs
 `settings-tui:sha-901d8a7eb8092db87b4fbd44fbed64beb74c1de3@sha256:08de4f9e…`, config-server runs
 `sha-901d8a7@sha256:db773cd2…` (both published from rollout commit `901d8a7` via explicit
