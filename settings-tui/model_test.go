@@ -566,6 +566,40 @@ func TestPanesShareHeight(t *testing.T) {
 		t.Fatalf("cap line not footed above the pane bottom:\n%s", text)
 	}
 
+	// The detail pane fills the width left of the master pane and keeps its
+	// anchors: the status strip is tight at the top with the separator right
+	// below it, the ledger rows stay footed above the shared bottom line, and
+	// the pane pair spans the terminal width.
+	m = newModel("alice", []string{"ubuntu"}, 3, client, 120, 24)
+	m = driveRefresh(t, m)
+	text = view(m)
+	lines = strings.Split(text, "\n")
+	bottom, _ = bottoms(text)
+	if len(bottom) != 1 {
+		t.Fatalf("panes do not close on one shared line:\n%s", text)
+	}
+	strip := -1
+	for i, line := range lines {
+		if strings.Contains(line, "RESTARTS") {
+			strip = i
+			break
+		}
+	}
+	if strip < 1 || !strings.Contains(lines[strip+1], "up 2h") || !strings.Contains(lines[strip+2], "├") {
+		t.Fatalf("status strip not tight at the top with its separator below:\n%s", text)
+	}
+	ledger := lines[bottom[0]-4 : bottom[0]]
+	for i, label := range []string{"IMAGE", "RUNTIME", "REQUESTS", "LIMITS"} {
+		if !strings.Contains(ledger[i], label) {
+			t.Fatalf("ledger rows not footed above the pane bottom:\n%s", text)
+		}
+	}
+	for i, line := range lines[:bottom[0]+1] {
+		if w := ansi.StringWidth(line); w != 120 {
+			t.Fatalf("pane line %d spans %d columns, want 120:\n%s", i, w, text)
+		}
+	}
+
 	// The honesty line still drops when the pane does not fit: it needs one
 	// body line more than the strip+ledger pane, so a 10-row terminal drops it
 	// while an 11-row one keeps it — both fill their height exactly.

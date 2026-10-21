@@ -208,9 +208,11 @@ ssh ubuntu@dev.box.example.com
   validated as HTML prototypes on a throwaway branch): master rows carry only the template
   name (left) and the state word (right); the selected box's detail pane carries a status strip
   (status, uptime, restarts) over a ledger (image, runtime, requests, limits); the master pane is
-  footed by the per-owner cap line `created N/max`; both panes fill the body budget — blank rows
-  grow above each pane's footed block, so the boxes close on one line and the footer sits at the
-  terminal bottom; ~3 s polling; and exactly one action — delete
+  footed by the per-owner cap line `created N/max`; both panes fill the body budget — the master
+  grows blank rows above its footed cap block, the detail grows them inside its ledger section
+  (strip tight at the top, ledger rows footed), so the boxes close on one line and the footer sits
+  at the terminal bottom — and the detail pane fills the width left of the master pane; ~3 s
+  polling; and exactly one action — delete
   behind a centered `y`-confirmation popup naming all three consequences. Owner env is the
   raw server-verified identity (blank denied); display sanitization never changes authorization.
   `DEV_BOX_BOX_TEMPLATES` carries the owner's ordinary persistent template names from the same walk

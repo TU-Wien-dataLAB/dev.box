@@ -245,8 +245,10 @@ func scrollRows(rows []string, visible, selected int) []string {
 
 // masterDetailLines renders the master–detail body (or its centered delete
 // popup) and reports whether the layout fits at all. Both panes fill the body
-// budget: blank rows grow above each pane's footed block, so the boxes close
-// on the same line and the footer sits at the terminal bottom.
+// budget: the master pane grows blank rows above its footed cap block, the
+// detail pane grows them inside its ledger section below the separator, so
+// the boxes close on the same line, the cap line and the ledger rows stay
+// footed, and the footer sits at the terminal bottom.
 func (m settingsModel) masterDetailLines(style styler, budget int) ([]string, bool) {
 	if m.dialog != dialogNone {
 		if budget >= 8 {
@@ -259,10 +261,10 @@ func (m settingsModel) masterDetailLines(style styler, budget int) ([]string, bo
 		return nil, false
 	}
 	master := m.masterPane(style, masterInner, budget)
-	master = stretchPane(master, budget-len(master), masterInner)
+	master = stretchAboveSep(master, budget-len(master), masterInner)
 	if detailInner > 0 {
 		detail := m.detailPane(style, detailInner, budget)
-		detail = stretchPane(detail, budget-len(detail), detailInner)
+		detail = stretchBelowSep(detail, budget-len(detail), detailInner)
 		return zipPanes(master, detail), true
 	}
 	return master, true
@@ -270,8 +272,8 @@ func (m settingsModel) masterDetailLines(style styler, budget int) ([]string, bo
 
 // paneWidths returns the master and detail inner widths (detail 0 when the
 // detail pane does not fit; both 0 when even the master pane cannot render).
-// The detail width covers the widest row so it does not jump between
-// selections.
+// The master pane is as wide as its rows; the detail pane fills the width
+// left of it, so the two panes span the terminal together.
 func (m settingsModel) paneWidths(budget int) (int, int) {
 	templateWidth := 6
 	for _, row := range m.rows {
@@ -283,23 +285,12 @@ func (m settingsModel) paneWidths(budget int) (int, int) {
 	if budget < 6 || m.width < masterInner+4 {
 		return 0, 0
 	}
-	detail := stripWidth
-	for _, row := range m.rows {
-		title := sanitize(row.template) + " · " + row.name
-		detail = max(detail, ansi.StringWidth(title))
-		for _, value := range []string{row.image, row.runtimeClass, row.requests, row.limits} {
-			detail = max(detail, ledgerLabelWidth+ansi.StringWidth(sanitize(value)))
-		}
-		detail = max(detail,
-			ansi.StringWidth("ssh "+sanitize(row.template)+"@"+sshHostPlaceholder+" creates this box"),
-			ansi.StringWidth(honestyReconnect))
-	}
-	// One gutter column and the two detail borders beside the master pane.
+	// One gutter column and the detail borders beside the master pane.
 	avail := m.width - (masterInner + 4) - 1 - 4
 	if avail < stripWidth || budget < 9 {
 		return masterInner, 0
 	}
-	return masterInner, min(detail, avail)
+	return masterInner, avail
 }
 
 // masterPane renders the boxes pane: one row per trusted template — name
@@ -491,30 +482,58 @@ func (m settingsModel) deletePopup(style styler, budget int) ([]string, bool) {
 	return lines, true
 }
 
-// stretchPane grows a pane by blank inner lines above its footed block —
-// everything from the pane's separator (the master cap separator, the detail
-// ledger separator) down to its bottom border — so paired panes can close on
-// the same line and fill the body budget. A pane without a separator pads
-// above its bottom border. Content lines always start with the pane's side
-// border, so the separator is unambiguous.
-func stretchPane(lines []string, grow, inner int) []string {
-	if grow <= 0 {
-		return lines
-	}
-	at := len(lines) - 1
+// sepIndex returns the index of a pane's separator line, or -1 when the
+// pane has none. Content lines always start with the pane's side border, so
+// a leading separator border is unambiguous.
+func sepIndex(lines []string) int {
 	for i, line := range lines {
 		if strings.HasPrefix(line, "├") {
-			at = i
-			break
+			return i
 		}
 	}
-	stretched := make([]string, 0, len(lines)+grow)
+	return -1
+}
+
+// insertBlanks inserts blank inner lines at index at.
+func insertBlanks(lines []string, at, n, inner int) []string {
+	stretched := make([]string, 0, len(lines)+n)
 	stretched = append(stretched, lines[:at]...)
 	blank := paneLine("", inner)
-	for i := 0; i < grow; i++ {
+	for i := 0; i < n; i++ {
 		stretched = append(stretched, blank)
 	}
 	return append(stretched, lines[at:]...)
+}
+
+// stretchAboveSep grows a pane by blank inner lines directly above its
+// separator-bounded footed block — or above its bottom border when the pane
+// has no separator — so panes can fill the body budget: the master pane's
+// rows float at the top while its cap block stays footed.
+func stretchAboveSep(lines []string, grow, inner int) []string {
+	if grow <= 0 {
+		return lines
+	}
+	at := sepIndex(lines)
+	if at < 0 {
+		at = len(lines) - 1
+	}
+	return insertBlanks(lines, at, grow, inner)
+}
+
+// stretchBelowSep grows a pane by blank inner lines directly below its
+// separator, inside the footed section — or above its bottom border when the
+// pane has no separator: the detail pane's status strip stays tight at the
+// top while its ledger section carries the blank rows, keeping the ledger
+// rows footed.
+func stretchBelowSep(lines []string, grow, inner int) []string {
+	if grow <= 0 {
+		return lines
+	}
+	at := sepIndex(lines) + 1
+	if at < 1 {
+		at = len(lines) - 1
+	}
+	return insertBlanks(lines, at, grow, inner)
 }
 
 // zipPanes joins two panes side by side, one gutter column apart, padding
