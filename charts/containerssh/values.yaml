@@ -10,7 +10,7 @@ image:
 settings:
   image:
     repository: ghcr.io/tu-wien-datalab/dev.box/settings-tui
-    tag: sha-4285f7893a1851eecf6eeec177a9964ef6815d3a
+    tag: sha-901d8a7eb8092db87b4fbd44fbed64beb74c1de3@sha256:08de4f9e7d47a5928b147591e4349bbb0183483920bbcd29fd13d2730841c1f2
 
 replicaCount: 1
 

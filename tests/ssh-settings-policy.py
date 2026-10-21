@@ -262,15 +262,16 @@ def main():
                                 ("ENV", "/tmp/probe"), ("BASH_ENV", "/tmp/probe")):
                 t.request(ch, "env", (("string", name), ("string", value)), label=f"pre-start env {name}")
         t.request(ch, "shell", expected=True)
-        text = output(ch, lambda s: "Settings" in s and owner in s and
-                      re.search(r"read[ -]?only", s, re.I) and re.search(r"\bq\b", s), "settings screen")
+        management_hint = r"d delete|· d ·"
+        text = output(ch, lambda s: "dev.box settings" in s and owner in s and
+                      re.search(management_hint, s) and re.search(r"\bq\b", s), "settings screen")
         owner_pattern = r"(?i:\bowner\b)[^\n\w]*" + re.escape(owner) + r"(?=\s|$)"
         require(re.search(owner_pattern, text), "screen lacks a labeled exact expected owner")
         if other_owner:
             require(not re.search(r"(?i:\bowner\b)[^\n\w]*" + re.escape(other_owner) + r"(?=\s|$)", text),
                     "screen leaked the other authenticated owner")
-        require(re.search(r"\bPOC\b|proof[ -]of[ -]concept", text, re.I), "screen lacks POC indication")
-        passed("PTY screen: Settings, POC/read-only, expected owner and q hint")
+        require(re.search(management_hint, text), "screen lacks management-UI delete hint")
+        passed("PTY screen: dev.box settings header, expected owner, delete hint and q")
         return ch
 
     def denied_open(t, kind, label, accepted_codes=(1, 3), **kwargs):

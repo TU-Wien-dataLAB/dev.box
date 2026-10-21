@@ -357,21 +357,36 @@ Set `CONTAINERSSH_IMAGE` to validate the intended immutable rollout image.
 
 ## Deployment status
 
-> **Issue #7 (settings management UI) is implemented but NOT deployed.** The management TUI
-> (box rows, delete, scoped API egress, `DEV_BOX_BOX_TEMPLATES`) lives in this repository with all
-> local gates green; rollout and live acceptance are approval-gated per
-> [the management acceptance plan](tests/settings-management-migration.md). Nothing below describes
-> the deployed cluster; the revision-41 baseline is unchanged.
+**Current status (2026-10-21):** revision **44**, chart **0.4.0**. Issue #7's settings management
+UI is **deployed and live-accepted** with user approval. The Settings guest runs
+`settings-tui:sha-901d8a7eb8092db87b4fbd44fbed64beb74c1de3@sha256:08de4f9e…`, config-server runs
+`sha-901d8a7@sha256:db773cd2…` (both published from rollout commit `901d8a7` via explicit
+`workflow_dispatch` — the push-triggered image workflows did not fire for that SHA); gateway and
+auth-server pins are unchanged. Chart defaults now pin the management-UI settings image.
+Rollout went 42 (images) → 43 (temporary `smoke-mgmt` template) → 44 (template removed); the
+owner's real box kept UID `b2abba32-…` throughout. Live gates all passed: UI rows/Live/refresh,
+delete dialog with the three consequences, **delete + recreate from the UI** (Terminating →
+not-created → same deterministic name, new UID), full SSH policy probe suite (exec/subsystem/env/
+signal/forwarding denied; one session per transport; resize stress), lifecycle (SIGKILL client,
+control master), unknown-template rejection 0.18 s, impersonated owner authorization (get/delete
+on exact names only), scoped settings→API egress exercised by live requests (kubeadm-style
+apiserver pods match the default selector; 443+6443 for Calico post-NAT). The egress NetworkPolicy
+`containerssh-sessions-settings-api` is the **only** policy change; ordinary pods are unchanged.
+**Read [live evidence and caveats](tests/settings-management-2026-10-21.md)** before touching the
+rollout: un-drained PTY stalls session close after `q` (driver artifact, real terminals drain),
+OpenSSH `-tt` with piped stdout swallows ordinary-box exec output (client artifact), #10
+(two real owners) gates pre-alpha, #12 (PVC) and #13 (metrics) remain open. The revision-41
+issue-#11 notes below remain the historical record for the Settings migration.
 
-**Current status (2026-10-19):** revision **41**, chart **0.3.3**. Issue #11's code-owned Settings
+**Historical revision-41 baseline (2026-10-19):** revision **41**, chart **0.3.3**. Issue #11's code-owned Settings
 migration is deployed with user approval. Config-server is pinned to
 `sha-5bca171@sha256:b74681bf6d3cd12ccfd01f7e4b6f5d368386882b297375d77e030f782dc204dc`;
 gateway/auth and the Settings guest retain their previous digest pins. The old Settings template
 is removed; default-runtime Settings uses its owner's projected token and exact-name pod Role.
 Live policy/lifetime, projected-file presence, impersonated authorization, isolated reconciliation/
 failure/cap checks passed; ordinary Kata pod UID is unchanged and fixtures are removed.
-**Before evaluating #11 closure or adding token-consuming actions, read
-[live evidence and limitations](tests/settings-code-live-validation.md)**: inherited Calico policy
+For issue-#11 evidence and limitations see
+[live evidence and limitations](tests/settings-code-live-validation.md): inherited Calico policy
 permissions remain, mounted-bearer authentication was not exercised, API egress stays blocked,
 and two-real-owner acceptance remains #10.
 

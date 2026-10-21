@@ -1,5 +1,8 @@
 # How to accept the settings management UI (issue #7)
 
+> **Status: rollout completed 2026-10-21** — revisions 42–44, all gates passed; see
+> [the live evidence](settings-management-2026-10-21.md). This document remains the procedure.
+
 Scope: [dev.box issue #7](https://github.com/TU-Wien-dataLAB/dev.box/issues/7) — the settings TUI
 grown from the read-only #9/#11 POC into the live management interface (box rows, delete with
 confirmation, honest connection status). Issues #12 (PVC) and #13 (metrics/top) remain open

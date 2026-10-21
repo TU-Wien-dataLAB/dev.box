@@ -125,7 +125,7 @@ def main():
                     output.extend(os.read(master, 8192))
                 require(len(output) <= 262144, "terminal output exceeds cap")
                 text = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", output).decode("utf-8", "replace")
-                if ("Settings" in text and "read-only" in text and "q: quit" in text and
+                if ("dev.box settings" in text and re.search(r"d delete|· d ·", text) and "q: quit" in text and
                         re.search(r"\bOwner:\s*" + re.escape(args.owner) + r"(?=\s|$)", text)):
                     break
                 require(child.poll() is None, "SSH exited before canonical owner screen")
