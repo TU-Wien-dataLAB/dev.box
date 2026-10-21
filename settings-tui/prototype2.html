@@ -1,0 +1,474 @@
+<!doctype html>
+<!--
+  PROTOTYPE — round 2, throwaway UI exploration, not production code.
+
+  Question: "How should the revised master–detail settings TUI look?"
+
+  Lineage: variant C (master–detail) won round 1 (prototype.html), with the
+  user's changes pinned:
+    · master list shows ONLY the template name (left) and the state (right)
+    · detail pane also shows REQUESTS (not just limits)
+    · delete confirmation is an actual centered popup, not an inline detail block
+
+  The variants share that pinned structure and differ in how the detail pane
+  organizes the same fields. C1/C2/C3 were the first three; C4 is the user's
+  synthesis: ONE stat strip at the top (STATUS, UPTIME, RESTARTS) plus the C1
+  ledger (IMAGE, RUNTIME, REQUESTS, LIMITS) below. C4 also shows the per-owner
+  box cap at the bottom of the master pane (created N/max + bar). In the real
+  TUI the cap arrives via operator-owned env (DEV_BOX_MAX_BOXES, injected by
+  the config server like DEV_BOX_BOX_TEMPLATES; unset/0 = cap disabled, hide
+  the element), and the count is derived from the TUI's own rows (its RBAC
+  cannot list pods). C4 is the default variant.
+  Switch via ?variant=C1|C2|C3|C4 (or ←/→ keys); 'd' toggles the delete
+  popup, 'c' cycles connection honesty (Live → Partial → Unreachable). The
+  winner gets re-implemented in
+  settings-tui/ (Bubble Tea); this file never ships.
+
+  Rows use the real naming contract: box- + first 10 hex of SHA-256 over
+  "matthias.matt\0<template>". ubuntu → box-8bbfc143fa (the live box).
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dev.box settings — UI prototype (round 2)</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    background: #05070c;
+    color: #c9d3de;
+    font: 13px/1.45 "SF Mono", ui-monospace, Menlo, Consolas, "Liberation Mono", monospace;
+    display: flex; flex-direction: column; align-items: center;
+    padding: 28px 16px 120px;
+  }
+
+  /* ---- fake terminal window (mock chrome, outside every design) ---- */
+  .termwin {
+    background: #0b0e14; border: 1px solid #262f3d;
+    box-shadow: 0 14px 44px rgba(0,0,0,.6);
+    max-width: 100%; overflow-x: auto;
+  }
+  .termbar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 7px 12px; border-bottom: 1px solid #262f3d;
+    color: #68738a; font-size: 12px; white-space: nowrap;
+  }
+  .dots span { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+  .dots span:nth-child(1) { background: #f85149; }
+  .dots span:nth-child(2) { background: #d29922; }
+  .dots span:nth-child(3) { background: #3fb950; }
+  .screen { position: relative; width: 100ch; max-width: 100%; padding: 16px 18px; }
+
+  /* ---- shared terminal vocabulary (ANSI-ish colors only) ---- */
+  .bold { font-weight: 700; }
+  .dim  { color: #68738a; }
+  .dimmer { color: #4a5468; }
+  .g { color: #3fb950; } .y { color: #d29922; } .r { color: #f85149; } .c { color: #39c5cf; }
+  .off { opacity: .55; }
+  .pane { border: 1px solid #39424f; position: relative; }
+  .pane > .pane-hd {
+    position: absolute; top: -0.72em; left: 10px;
+    background: #0b0e14; padding: 0 7px; margin: 0;
+    font-size: 13px; font-weight: 700; white-space: nowrap;
+  }
+  .note { margin: 10px 0 0; }
+
+  /* ---- shared master–detail skeleton ---- */
+  .vC { display: flex; gap: 12px; }
+  .vC .list { width: 36ch; flex: none; padding: 14px 10px 8px; }
+  .lrow { display: flex; align-items: baseline; gap: 1ch; padding: 3px 6px; white-space: nowrap; }
+  .lrow .st { margin-left: auto; }
+  .lrow.sel { background: rgba(56,139,253,.22); }
+  .lrule { border-top: 1px solid #2a3340; margin: 8px 0 6px; }
+  .capline { padding: 0 6px; white-space: nowrap; }
+  .capline .hint { display: block; margin-top: 2px; white-space: normal; }
+  .vC .detail { flex: 1; padding: 16px 14px 12px; }
+  .vC-ft {
+    display: flex; justify-content: space-between; margin-top: 12px; white-space: nowrap;
+  }
+
+  /* ---- C1: flat kv ledger ---- */
+  .kv { display: grid; grid-template-columns: 11ch 1fr; gap: 3px 2ch; }
+  .kv .k { color: #68738a; }
+
+  /* ---- C2: grouped panels + resource bars ---- */
+  .grp { display: flex; gap: 12px; align-items: stretch; }
+  .gpanel { border: 1px solid #39424f; position: relative; padding: 13px 12px 9px; flex: 1; }
+  .gpanel > .pane-hd { font-weight: 700; }
+  .gpanel .mini-kv { display: grid; grid-template-columns: 10ch 1fr; gap: 3px 1ch; }
+  .gpanel .mini-kv .k { color: #68738a; }
+  .brow { display: grid; grid-template-columns: 4ch auto 1fr; gap: 1ch; align-items: baseline; white-space: nowrap; }
+  .brow .vals { text-align: right; }
+  .vC2 .meta { margin-top: 12px; }
+  .vC2 .meta div { margin: 2px 0; }
+
+  /* ---- C3: stat strips ---- */
+  .strip { display: grid; gap: 2px 4ch; }
+  .strip.s3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .strip.s2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .strip .lbl { color: #68738a; font-size: 11px; letter-spacing: .06em; }
+  .strip .val { white-space: nowrap; }
+  .rule { border-top: 1px solid #2a3340; margin: 12px 0; }
+
+  /* ---- delete popup (shared) ---- */
+  .overlay {
+    position: absolute; inset: 0; z-index: 5;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(5,7,12,.62);
+  }
+  .modal {
+    width: 68ch; max-width: 92%; background: #0b0e14;
+    border: 1px solid #f85149; position: relative; padding: 18px 16px 14px;
+  }
+  .modal > .pane-hd { color: #f85149; }
+  .modal .conseq { margin: 3px 0; }
+  .modal .act { margin-top: 10px; }
+
+  /* ---- floating prototype switcher (not part of any design) ---- */
+  .switcher {
+    position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 10px;
+    background: #10151d; border: 1px solid #8b98ac; border-radius: 999px;
+    padding: 8px 14px; box-shadow: 0 8px 30px rgba(0,0,0,.7);
+    white-space: nowrap; z-index: 20;
+  }
+  .switcher button {
+    font: inherit; font-size: 12px; color: #c9d3de; background: #1b2330;
+    border: 1px solid #39424f; border-radius: 6px; padding: 3px 10px; cursor: pointer;
+  }
+  .switcher button:hover { border-color: #8b98ac; }
+  .switcher .sw-label { font-size: 13px; font-weight: 700; min-width: 15ch; text-align: center; }
+  .switcher .sep { width: 1px; height: 16px; background: #39424f; }
+  .switcher .sw-hint { font-size: 11px; color: #68738a; }
+
+  .caption { margin-top: 14px; color: #68738a; font-size: 12px; max-width: 100ch; text-align: center; }
+  .caption b { color: #c9d3de; }
+</style>
+</head>
+<body>
+
+  <div class="termwin">
+    <div class="termbar">
+      <span class="dots"><span></span><span></span><span></span></span>
+      <span>settings@dev.box — dev.box settings</span>
+      <span style="margin-left:auto">100×26</span>
+    </div>
+    <div class="screen" id="screen"></div>
+  </div>
+  <div class="caption" id="caption"></div>
+
+  <div class="switcher">
+    <button id="prev" title="previous variant">◀</button>
+    <span class="sw-label" id="swlabel"></span>
+    <button id="next" title="next variant">▶</button>
+    <span class="sep"></span>
+    <button id="dlgBtn" title="toggle the delete popup">popup: off</button>
+    <button id="connBtn" title="cycle connection state">conn: Live</button>
+    <span class="sep"></span>
+    <span class="sw-hint">←/→ variant · D popup · C connection</span>
+  </div>
+
+<script>
+"use strict";
+
+/* ---- shared mock data (real naming contract, plausible sample rows) ---- */
+const OWNER = "matthias.matt";
+const HOST  = "dev.box";
+const SEL   = "ubuntu";
+const ROWS = [
+  { tpl: "ubuntu",     pod: "box-8bbfc143fa", state: "running",     up: "up 8m",
+    image: "containerssh/containerssh-guest-image", runtime: "kata-qemu-runtime-rs",
+    restarts: 0, requests: "512Mi/250m", limits: "1Gi/500m",
+    res: [ { dim: "mem", req: "512Mi", lim: "1Gi",   f: 0.5 },
+           { dim: "cpu", req: "250m",  lim: "500m", f: 0.5 } ] },
+  { tpl: "data-lab",   pod: "box-f45f5edd30", state: "running",     up: "up 2d13h",
+    image: "ghcr.io/tu-wien-datalab/data-lab:py3.12", runtime: "kata-qemu-runtime-rs",
+    restarts: 1, requests: "3Gi/1", limits: "4Gi/2",
+    res: [ { dim: "mem", req: "3Gi",    lim: "4Gi", f: 0.75 },
+           { dim: "cpu", req: "1",      lim: "2",   f: 0.5 } ] },
+  { tpl: "tumbleweed", pod: "box-844be1ad9e", state: "terminating", up: "up 5h",
+    image: "registry.opensuse.org/opensuse/tumbleweed:latest", runtime: "default",
+    restarts: 0, requests: "1Gi/250m", limits: "2Gi/1",
+    res: [ { dim: "mem", req: "1Gi",    lim: "2Gi", f: 0.5 },
+           { dim: "cpu", req: "250m",   lim: "1",   f: 0.25 } ] },
+  { tpl: "kata-smoke", pod: "box-f27107fa0d", state: "notcreated" },
+];
+/* the row that goes stale in the Partial demo */
+const STALE_TPL = "data-lab";
+
+/* per-owner box cap: DEV_BOX_MAX_BOXES in the real TUI (3 = the default).
+   The count comes from the TUI's own rows — pods that exist (any phase,
+   including Terminating) count; "not created" does not. */
+const CAP = 3;
+
+const VARIANTS = [
+  { key: "C1", name: "Ledger",
+    desc: "Flat key/value ledger: one column of labeled rows (requests and limits as plain rows). Quietest, most uniform." },
+  { key: "C2", name: "Panels",
+    desc: "Grouped sub-panels: runtime facts on the left; requests-vs-limits as horizontal bars on the right (bar = fraction of the limit requested). Image/runtime below." },
+  { key: "C3", name: "Stat strips",
+    desc: "Horizontal stat strips: status/uptime/restarts as labeled columns, then image·runtime, then requests/limits as a second strip. Densest vertically." },
+  { key: "C4", name: "Strip + ledger",
+    desc: "C3's single top strip (STATUS, UPTIME, RESTARTS) with C1's ledger for the rest (IMAGE, RUNTIME, REQUESTS, LIMITS); the master pane foots the per-owner box cap (created N/max, at-cap hint)." },
+];
+
+let vi = 3;                          // variant index (C4 — latest revision is the default)
+let dialog = false;                  // show the delete popup
+let conn = "live";                   // live | partial | unreachable
+
+/* ---- small helpers ---- */
+const esc = s => s.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+const isStale = r => (conn === "unreachable" && r.state !== "notcreated") || (conn === "partial" && r.tpl === STALE_TPL);
+
+/* the state word, colored; the ONLY information the master list carries
+   besides the template name */
+function stateWord(r) {
+  switch (r.state) {
+    case "running":     return `<span class="g">Running</span>`;
+    case "terminating": return `<span class="y">Terminating</span>`;
+    case "pending":     return `<span class="y">Pending</span>`;
+    case "error":       return `<span class="r">Error</span>`;
+    case "notcreated":  return `<span class="dim">not created</span>`;
+    default:            return `<span class="dim">…</span>`;
+  }
+}
+function connBadge() {
+  if (conn === "live")        return `<span class="g">● Live</span>`;
+  if (conn === "partial")     return `<span class="y">◐ Partial</span>`;
+  if (conn === "unreachable") return `<span class="r">×</span> <span class="r">Unreachable</span>`;
+  return "";
+}
+function connNote() {
+  if (conn === "unreachable")
+    return `<div class="note r">× API unreachable — showing last known state · delete disabled</div>`;
+  if (conn === "partial")
+    return `<div class="note dim">◐ some rows show last known state (refresh failed)</div>`;
+  return "";
+}
+const selRow = () => ROWS.find(r => r.tpl === SEL);
+
+/* ---- shared pieces ---- */
+function master(extra = "") {
+  const rows = ROWS.map(r => {
+    const sel = r.tpl === SEL;
+    return `<div class="lrow${sel ? " sel" : ""}${isStale(r) ? " off" : ""}">
+      <span class="nm${sel ? " bold" : ""}">${sel ? "▸ " : "  "}${esc(r.tpl)}</span>
+      <span class="st">${stateWord(r)}</span>
+    </div>`;
+  }).join("");
+  return `<div class="list pane">
+    <h4 class="pane-hd">boxes</h4>
+    ${rows}
+    ${extra ? `<div class="lrule"></div>${extra}` : ""}
+  </div>`;
+}
+
+/* per-owner box cap element for the master pane: created N/max with a bar;
+   at cap the bar turns yellow and names the way out */
+function capLine() {
+  const created = ROWS.filter(r => r.state !== "notcreated").length;
+  const atCap = created >= CAP;
+  const cells = 10, filled = Math.min(cells, Math.round((created / CAP) * cells));
+  const cls = atCap ? "y" : "c";
+  return `<div class="capline">
+    <span class="dim">created</span> <span class="bold">${created}/${CAP}</span>
+    <span class="${cls}">${"█".repeat(filled)}</span><span class="dimmer">${"░".repeat(cells - filled)}</span>
+    ${atCap ? `<span class="hint dim">max boxes reached — delete one</span>` : ""}
+  </div>`;
+}
+function footer() {
+  return `<div class="vC-ft">
+    <span class="dim">↑/↓ select · r refresh · d delete · q quit</span>
+    <span class="dim">${esc(OWNER)} · ${connBadge()}</span>
+  </div>`;
+}
+
+/* delete popup: an actual centered popup over the screen */
+function popup() {
+  if (!dialog) return "";
+  const r = selRow();
+  const disabled = conn === "unreachable"
+    ? `<div class="conseq dim">delete is unavailable while the connection is Unreachable</div>` : "";
+  return `<div class="overlay"><div class="modal">
+    <h4 class="pane-hd">delete box</h4>
+    <div class="bold">Delete box "${esc(r.tpl)}" (${r.pod})?</div>
+    <div class="conseq dim">· all data on the box's local disk is destroyed</div>
+    <div class="conseq dim">· active sessions in the box are killed</div>
+    <div class="conseq dim">· a fresh box is created on your next login: ssh ${r.tpl}@${HOST}</div>
+    ${disabled}
+    <div class="act"><span class="r">y delete</span> · <span class="dim">n/Esc cancel</span></div>
+  </div></div>`;
+}
+
+/* ================================================================ */
+/* C1 — flat kv ledger                                               */
+/* ================================================================ */
+function renderC1() {
+  const r = selRow();
+  return `<div class="vC${conn === "unreachable" ? " off" : ""}">
+    ${master()}
+    <div class="detail pane">
+      <h4 class="pane-hd">${esc(r.tpl)} <span class="dim" style="font-weight:400">${r.pod}</span></h4>
+      <div class="kv">
+        <div class="k">STATUS</div><div>${stateWord(r)}</div>
+        <div class="k">UPTIME</div><div>${r.up}</div>
+        <div class="k">IMAGE</div><div>${esc(r.image)}</div>
+        <div class="k">RUNTIME</div><div>${esc(r.runtime)}</div>
+        <div class="k">REQUESTS</div><div>${r.requests}</div>
+        <div class="k">LIMITS</div><div>${r.limits}</div>
+        <div class="k">RESTARTS</div><div>${r.restarts}</div>
+      </div>
+    </div>
+  </div>
+  ${connNote()}
+  ${footer()}
+  ${popup()}`;
+}
+
+/* ================================================================ */
+/* C2 — grouped panels with request/limit bars                      */
+/* ================================================================ */
+function bar(f) {
+  const cells = 10, filled = Math.round(f * cells);
+  const cls = f <= 0.6 ? "g" : f <= 0.85 ? "y" : "r";
+  return `<span class="${cls}">${"█".repeat(filled)}</span><span class="dimmer">${"░".repeat(cells - filled)}</span>`;
+}
+function renderC2() {
+  const r = selRow();
+  const bars = r.res.map(x => `<div class="brow">
+    <span class="dim">${x.dim}</span>
+    <span>${bar(x.f)}</span>
+    <span class="vals dim">${x.req} / ${x.lim}</span>
+  </div>`).join("");
+  return `<div class="vC vC2${conn === "unreachable" ? " off" : ""}">
+    ${master()}
+    <div class="detail pane">
+      <h4 class="pane-hd">${esc(r.tpl)} <span class="dim" style="font-weight:400">${r.pod}</span></h4>
+      <div class="grp">
+        <div class="gpanel">
+          <h4 class="pane-hd">runtime</h4>
+          <div class="mini-kv">
+            <div class="k">STATUS</div><div>${stateWord(r)}</div>
+            <div class="k">UPTIME</div><div>${r.up}</div>
+            <div class="k">RESTARTS</div><div>${r.restarts}</div>
+          </div>
+        </div>
+        <div class="gpanel">
+          <h4 class="pane-hd">resources <span class="dim" style="font-weight:400">request / limit</span></h4>
+          ${bars}
+        </div>
+      </div>
+      <div class="meta">
+        <div>${esc(r.image)}</div>
+        <div class="dim">${esc(r.runtime)}</div>
+      </div>
+    </div>
+  </div>
+  ${connNote()}
+  ${footer()}
+  ${popup()}`;
+}
+
+/* ================================================================ */
+/* C3 — horizontal stat strips                                       */
+/* ================================================================ */
+function renderC3() {
+  const r = selRow();
+  return `<div class="vC vC3${conn === "unreachable" ? " off" : ""}">
+    ${master()}
+    <div class="detail pane">
+      <h4 class="pane-hd">${esc(r.tpl)} <span class="dim" style="font-weight:400">${r.pod}</span></h4>
+      <div class="strip s3">
+        <div><div class="lbl">STATUS</div><div class="val">${stateWord(r)}</div></div>
+        <div><div class="lbl">UPTIME</div><div class="val">${r.up}</div></div>
+        <div><div class="lbl">RESTARTS</div><div class="val">${r.restarts}</div></div>
+      </div>
+      <div class="rule"></div>
+      <div class="dim">${esc(r.image)} · ${esc(r.runtime)}</div>
+      <div class="rule"></div>
+      <div class="strip s2">
+        <div><div class="lbl">REQUESTS</div><div class="val">${r.requests}</div></div>
+        <div><div class="lbl">LIMITS</div><div class="val">${r.limits}</div></div>
+      </div>
+    </div>
+  </div>
+  ${connNote()}
+  ${footer()}
+  ${popup()}`;
+}
+
+/* ================================================================ */
+/* C4 — one top stat strip + ledger for the rest                    */
+/* ================================================================ */
+function renderC4() {
+  const r = selRow();
+  return `<div class="vC vC4${conn === "unreachable" ? " off" : ""}">
+    ${master(capLine())}
+    <div class="detail pane">
+      <h4 class="pane-hd">${esc(r.tpl)} <span class="dim" style="font-weight:400">${r.pod}</span></h4>
+      <div class="strip s3">
+        <div><div class="lbl">STATUS</div><div class="val">${stateWord(r)}</div></div>
+        <div><div class="lbl">UPTIME</div><div class="val">${r.up}</div></div>
+        <div><div class="lbl">RESTARTS</div><div class="val">${r.restarts}</div></div>
+      </div>
+      <div class="rule"></div>
+      <div class="kv">
+        <div class="k">IMAGE</div><div>${esc(r.image)}</div>
+        <div class="k">RUNTIME</div><div>${esc(r.runtime)}</div>
+        <div class="k">REQUESTS</div><div>${r.requests}</div>
+        <div class="k">LIMITS</div><div>${r.limits}</div>
+      </div>
+    </div>
+  </div>
+  ${connNote()}
+  ${footer()}
+  ${popup()}`;
+}
+
+/* ---- render + switcher wiring ---- */
+const RENDERERS = [renderC1, renderC2, renderC3, renderC4];
+
+function render() {
+  document.getElementById("screen").innerHTML = RENDERERS[vi]();
+  const v = VARIANTS[vi];
+  document.getElementById("swlabel").textContent = `${v.key} · ${v.name}`;
+  document.getElementById("caption").innerHTML =
+    `<b>${v.key} — ${v.name}:</b> ${v.desc} <span class="dimmer">(sample rows; popup ${dialog ? "on" : "off"}, connection ${conn})</span>`;
+  document.getElementById("dlgBtn").textContent = `popup: ${dialog ? "on" : "off"}`;
+  document.getElementById("connBtn").textContent = `conn: ${conn[0].toUpperCase()}${conn.slice(1)}`;
+  try {
+    history.replaceState(null, "", "?variant=" + v.key);
+  } catch (e) { /* file:// quirks; state still cycles in-memory */ }
+}
+
+function cycle(d) { vi = (vi + d + VARIANTS.length) % VARIANTS.length; render(); }
+function cycleConn() {
+  conn = conn === "live" ? "partial" : conn === "partial" ? "unreachable" : "live";
+  render();
+}
+
+document.getElementById("prev").addEventListener("click", () => cycle(-1));
+document.getElementById("next").addEventListener("click", () => cycle(1));
+document.getElementById("dlgBtn").addEventListener("click", () => { dialog = !dialog; render(); });
+document.getElementById("connBtn").addEventListener("click", cycleConn);
+
+document.addEventListener("keydown", e => {
+  const t = e.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+  if (e.key === "ArrowLeft")  { e.preventDefault(); cycle(-1); }
+  else if (e.key === "ArrowRight") { e.preventDefault(); cycle(1); }
+  else if (e.key === "d" || e.key === "D") { dialog = !dialog; render(); }
+  else if (e.key === "c" || e.key === "C") { cycleConn(); }
+});
+
+/* initial variant from ?variant=, reload-stable */
+(function init() {
+  const q = new URLSearchParams(location.search).get("variant");
+  const i = VARIANTS.findIndex(v => v.key === (q || "").toUpperCase());
+  if (i >= 0) vi = i;
+  render();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,506 @@
+<!doctype html>
+<!--
+  PROTOTYPE — throwaway UI exploration, not production code.
+
+  Question: "What should the dev.box settings TUI look like?"
+
+  Four structurally different designs of the settings screen, mocked as
+  terminal screens in this single HTML file, switchable via ?variant=A|B|C|D
+  (also ←/→ keys). 'd' toggles each design's delete-confirmation state,
+  'c' cycles the connection honesty state (Live → Partial → Unreachable) to
+  judge dim/last-known/disable rendering. The winning design gets re-implemented
+  in settings-tui/ (Bubble Tea); this file never ships.
+
+  Rows use the real naming contract: box- + first 10 hex of SHA-256 over
+  "matthias.matt\0<template>". ubuntu → box-8bbfc143fa (the live box).
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dev.box settings — UI prototype</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    background: #05070c;
+    color: #c9d3de;
+    font: 13px/1.45 "SF Mono", ui-monospace, Menlo, Consolas, "Liberation Mono", monospace;
+    display: flex; flex-direction: column; align-items: center;
+    padding: 28px 16px 120px;
+  }
+
+  /* ---- fake terminal window (mock chrome, outside every design) ---- */
+  .termwin {
+    background: #0b0e14; border: 1px solid #262f3d;
+    box-shadow: 0 14px 44px rgba(0,0,0,.6);
+    max-width: 100%; overflow-x: auto;
+  }
+  .termbar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 7px 12px; border-bottom: 1px solid #262f3d;
+    color: #68738a; font-size: 12px; white-space: nowrap;
+  }
+  .dots span { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+  .dots span:nth-child(1) { background: #f85149; }
+  .dots span:nth-child(2) { background: #d29922; }
+  .dots span:nth-child(3) { background: #3fb950; }
+  .screen { position: relative; width: 106ch; max-width: 100%; padding: 16px 18px; }
+
+  /* ---- shared terminal vocabulary (ANSI-ish colors only) ---- */
+  .bold { font-weight: 700; }
+  .dim  { color: #68738a; }
+  .dimmer { color: #4a5468; }
+  .g { color: #3fb950; } .y { color: #d29922; } .r { color: #f85149; } .c { color: #39c5cf; }
+  .off { opacity: .55; }
+  .pane { border: 1px solid #39424f; position: relative; }
+  .pane > .pane-hd {
+    position: absolute; top: -0.72em; left: 10px;
+    background: #0b0e14; padding: 0 7px; margin: 0;
+    font-size: 13px; font-weight: 700; white-space: nowrap;
+  }
+  .note { margin: 10px 0 0; }
+
+  /* ---- variant A: full-width table ---- */
+  .vA .frame { border: 1px solid #39424f; }
+  .vA .frame-hd {
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding: 7px 12px; border-bottom: 1px solid #39424f; white-space: nowrap;
+  }
+  .vA .cols, .vA .row {
+    display: grid; align-items: baseline;
+    grid-template-columns: 12ch 15ch 10ch 1fr 20ch 11ch 4ch;
+    gap: 0 2ch; padding: 4px 12px; white-space: nowrap;
+  }
+  .vA .cols { color: #68738a; border-bottom: 1px solid #2a3340; padding-bottom: 5px; }
+  .vA .cols > div { font-size: 11px; letter-spacing: .06em; }
+  .vA .row:nth-child(odd) { background: rgba(255,255,255,.018); }
+  .vA .row.sel { background: rgba(56,139,253,.22); }
+  .vA .row .img { overflow: hidden; text-overflow: ellipsis; }
+  .vA .frame-ft {
+    display: flex; justify-content: space-between;
+    border-top: 1px solid #39424f; padding: 6px 12px; white-space: nowrap;
+  }
+
+  /* ---- variant B: card dashboard ---- */
+  .vB-hd { display: flex; align-items: baseline; gap: 2ch; margin-bottom: 12px; white-space: nowrap; }
+  .vB-hd .right { margin-left: auto; }
+  .vB-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .vB .card { padding: 8px 12px 7px; display: flex; flex-direction: column; min-height: 9.2em; }
+  .vB .card-hd { display: flex; justify-content: space-between; gap: 2ch; margin-bottom: 6px; white-space: nowrap; }
+  .vB .card-up { font-weight: 700; margin-bottom: 3px; }
+  .vB .card-img { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .vB .card-meta { margin: 3px 0; white-space: nowrap; }
+  .vB .card-pod { margin-top: auto; padding-top: 6px; white-space: nowrap; }
+  .vB .card.sel { border-color: #8b98ac; }
+  .vB .card.ghost { border-style: dashed; }
+  .vB .card .hint { margin-top: 5px; }
+  .vB-ft { margin-top: 12px; white-space: nowrap; }
+
+  /* ---- variant C: master–detail ---- */
+  .vC { display: flex; gap: 12px; }
+  .vC .list { width: 34ch; flex: none; padding: 14px 10px 8px; }
+  .vC .lrow { display: flex; align-items: baseline; gap: 1ch; padding: 3px 6px; white-space: nowrap; }
+  .vC .lrow .st { margin-left: auto; }
+  .vC .lrow.sel { background: rgba(56,139,253,.22); }
+  .vC .detail { flex: 1; padding: 16px 14px 12px; }
+  .vC .kv { display: grid; grid-template-columns: 11ch 1fr; gap: 2px 2ch; }
+  .vC .kv .k { color: #68738a; }
+  .vC .del {
+    border: 1px solid #39424f; margin-top: 14px; padding: 8px 12px 9px; position: relative;
+  }
+  .vC .del > .pane-hd { color: #f85149; font-weight: 700; }
+  .vC .del.armed { border-color: #f85149; }
+  .vC .del .conseq { margin: 3px 0; }
+  .vC .del .act { margin-top: 8px; }
+  .vC-ft { margin-top: 12px; white-space: nowrap; }
+
+  /* ---- variant D: focus ---- */
+  .vD { min-height: 24em; display: flex; flex-direction: column; }
+  .vD-hd { display: flex; gap: 2ch; white-space: nowrap; }
+  .vD-hd .right { margin-left: auto; }
+  .vD-center { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 14px 0; }
+  .vD .pager { white-space: nowrap; }
+  .vD .hero { width: 56ch; max-width: 100%; padding: 26px 16px 18px; text-align: center; }
+  .vD .hero .line { margin: 3px 0; white-space: nowrap; }
+  .vD .hero .up { font-weight: 700; font-size: 15px; margin: 7px 0 5px; }
+  .vD .keys { white-space: nowrap; }
+
+  /* ---- delete modals (A, B) ---- */
+  .overlay {
+    position: absolute; inset: 0; z-index: 5;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(5,7,12,.62);
+  }
+  .modal {
+    width: 68ch; max-width: 92%; background: #0b0e14;
+    border: 1px solid #f85149; position: relative; padding: 18px 16px 14px;
+  }
+  .modal > .pane-hd { color: #f85149; }
+  .modal .conseq { margin: 3px 0; }
+  .modal .act { margin-top: 10px; }
+
+  /* ---- floating prototype switcher (not part of any design) ---- */
+  .switcher {
+    position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 10px;
+    background: #10151d; border: 1px solid #8b98ac; border-radius: 999px;
+    padding: 8px 14px; box-shadow: 0 8px 30px rgba(0,0,0,.7);
+    white-space: nowrap; z-index: 20;
+  }
+  .switcher button {
+    font: inherit; font-size: 12px; color: #c9d3de; background: #1b2330;
+    border: 1px solid #39424f; border-radius: 6px; padding: 3px 10px; cursor: pointer;
+  }
+  .switcher button:hover { border-color: #8b98ac; }
+  .switcher .sw-label { font-size: 13px; font-weight: 700; min-width: 15ch; text-align: center; }
+  .switcher .sep { width: 1px; height: 16px; background: #39424f; }
+  .switcher .sw-hint { font-size: 11px; color: #68738a; }
+
+  .caption { margin-top: 14px; color: #68738a; font-size: 12px; max-width: 106ch; text-align: center; }
+  .caption b { color: #c9d3de; }
+</style>
+</head>
+<body>
+
+  <div class="termwin">
+    <div class="termbar">
+      <span class="dots"><span></span><span></span><span></span></span>
+      <span>settings@dev.box — dev.box settings</span>
+      <span style="margin-left:auto">106×26</span>
+    </div>
+    <div class="screen" id="screen"></div>
+  </div>
+  <div class="caption" id="caption"></div>
+
+  <div class="switcher">
+    <button id="prev" title="previous variant">◀</button>
+    <span class="sw-label" id="swlabel"></span>
+    <button id="next" title="next variant">▶</button>
+    <span class="sep"></span>
+    <button id="dlgBtn" title="toggle the delete-confirmation state">dialog: off</button>
+    <button id="connBtn" title="cycle connection state">conn: Live</button>
+    <span class="sep"></span>
+    <span class="sw-hint">←/→ variant · D dialog · C connection</span>
+  </div>
+
+<script>
+"use strict";
+
+/* ---- shared mock data (real naming contract, plausible sample rows) ---- */
+const OWNER = "matthias.matt";
+const HOST  = "dev.box";
+const SEL   = "ubuntu";
+const ROWS = [
+  { tpl: "ubuntu",     pod: "box-8bbfc143fa", state: "running",     up: "up 8m",
+    image: "containerssh/containerssh-guest-image",      runtime: "kata-qemu-runtime-rs", restarts: 0, limits: "1Gi/500m" },
+  { tpl: "data-lab",   pod: "box-f45f5edd30", state: "running",     up: "up 2d13h",
+    image: "ghcr.io/tu-wien-datalab/data-lab:py3.12",    runtime: "kata-qemu-runtime-rs", restarts: 1, limits: "4Gi/2" },
+  { tpl: "tumbleweed", pod: "box-844be1ad9e", state: "terminating", up: "up 5h",
+    image: "registry.opensuse.org/opensuse/tumbleweed:latest", runtime: "default",  restarts: 0, limits: "2Gi/1" },
+  { tpl: "kata-smoke", pod: "box-f27107fa0d", state: "notcreated" },
+];
+/* the row that goes stale in the Partial demo */
+const STALE_TPL = "data-lab";
+
+const VARIANTS = [
+  { key: "A", name: "Table",
+    desc: "Full-width table: column headers, aligned fields, inverse selection. Delete = centered modal." },
+  { key: "B", name: "Cards",
+    desc: "Card dashboard: one bordered card per box, 2-up grid; status in the card header, uptime as hero line. Delete = modal." },
+  { key: "C", name: "Master–detail",
+    desc: "Compact list left, live detail pane right; delete consequences always visible, armed inline (no modal)." },
+  { key: "D", name: "Focus",
+    desc: "One box at a time (n/p to page), everything centered and readable; delete confirmation inline in the hero card." },
+];
+
+let vi = 0;                          // variant index
+let dialog = false;                  // show the delete-confirmation state
+let conn = "live";                   // live | partial | unreachable
+
+/* ---- small helpers ---- */
+const esc = s => s.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+const isStale = r => (conn === "unreachable" && r.state !== "notcreated") || (conn === "partial" && r.tpl === STALE_TPL);
+
+function statusHTML(r) {
+  let s;
+  switch (r.state) {
+    case "running":     s = `<span class="g">● Running</span>`; break;
+    case "terminating": s = `<span class="y">● Terminating</span>`; break;
+    case "pending":     s = `<span class="y">◐ Pending</span>`; break;
+    case "error":       s = `<span class="r">×</span> <span class="r">Error</span>`; break;
+    case "notcreated":  s = `<span class="dim">○ not created</span>`; break;
+    default:            s = `<span class="dim">…</span>`;
+  }
+  if (isStale(r) && r.state !== "notcreated") s += ` <span class="dim">(last known)</span>`;
+  return s;
+}
+function connBadge() {
+  if (conn === "live")        return `<span class="g">● Live</span>`;
+  if (conn === "partial")     return `<span class="y">◐ Partial</span>`;
+  if (conn === "unreachable") return `<span class="r">×</span> <span class="r">Unreachable</span>`;
+  return "";
+}
+function connNote() {
+  if (conn === "unreachable")
+    return `<div class="note r">× API unreachable — showing last known state · delete disabled</div>`;
+  if (conn === "partial")
+    return `<div class="note dim">◐ some rows show last known state (refresh failed)</div>`;
+  return "";
+}
+function dialogDisabledNote() {
+  return conn === "unreachable"
+    ? `<div class="conseq dim">delete is unavailable while the connection is Unreachable</div>` : "";
+}
+const selRow = () => ROWS.find(r => r.tpl === SEL);
+const keysBar = keys => `<span class="dim">${keys}</span>`;
+
+/* ---- shared delete-consequence lines (the real three, verbatim) ---- */
+function consequences(r) {
+  return `
+    <div class="conseq dim">· all data on the box's local disk is destroyed</div>
+    <div class="conseq dim">· active sessions in the box are killed</div>
+    <div class="conseq dim">· a fresh box is created on your next login: ssh ${r.tpl}@${HOST}</div>`;
+}
+const confirmKeys = `<span class="r">y delete</span> · <span class="dim">n/Esc cancel</span>`;
+
+/* ================================================================ */
+/* Variant A — full-width table                                      */
+/* ================================================================ */
+function renderA() {
+  const rows = ROWS.map(r => {
+    const sel = r.tpl === SEL;
+    const stale = isStale(r);
+    const cls = "row" + (sel ? " sel" : "") + (stale ? " off" : "");
+    if (r.state === "notcreated") {
+      return `<div class="${cls}">
+        <div class="dim">${sel ? "▸ " : "  "}${esc(r.tpl)}</div>
+        <div>${statusHTML(r)}</div>
+        <div class="dim">—</div>
+        <div class="dim img">ssh ${r.tpl}@${HOST} to create</div>
+        <div class="dim">—</div><div class="dim">—</div><div class="dim">—</div>
+      </div>`;
+    }
+    return `<div class="${cls}">
+      <div>${sel ? "▸ " : "  "}<span class="bold">${esc(r.tpl)}</span></div>
+      <div>${statusHTML(r)}</div>
+      <div>${r.up}</div>
+      <div class="dim img">${esc(r.image)}</div>
+      <div class="dim">${esc(r.runtime)}</div>
+      <div class="dim">${r.limits}</div>
+      <div class="dim">${r.restarts}</div>
+    </div>`;
+  }).join("");
+
+  const dialogHTML = dialog ? `
+    <div class="overlay"><div class="modal">
+      <h4 class="pane-hd">delete box</h4>
+      <div class="bold">Delete box "${SEL}" (${selRow().pod})?</div>
+      ${consequences(selRow())}
+      ${dialogDisabledNote()}
+      <div class="act">${confirmKeys}</div>
+    </div></div>` : "";
+
+  return `<div class="vA${conn === "unreachable" ? " off" : ""}">
+    <div class="frame">
+      <div class="frame-hd">
+        <span><span class="bold">dev.box settings</span> <span class="dim">· Owner ${esc(OWNER)}</span></span>
+        <span>${connBadge()} <span class="dim">· refreshed 2s ago</span></span>
+      </div>
+      <div class="cols">
+        <div>BOX</div><div>STATUS</div><div>UPTIME</div><div>IMAGE</div>
+        <div>RUNTIME</div><div>LIMITS</div><div>RST</div>
+      </div>
+      ${rows}
+      ${connNote()}
+      <div class="frame-ft">
+        ${keysBar("↑/↓ select · r refresh · d delete · q quit")}
+        <span class="dim">4 boxes · ${selRow().pod}</span>
+      </div>
+    </div>
+    ${dialogHTML}
+  </div>`;
+}
+
+/* ================================================================ */
+/* Variant B — card dashboard                                        */
+/* ================================================================ */
+function renderB() {
+  const cards = ROWS.map(r => {
+    const sel = r.tpl === SEL;
+    const stale = isStale(r);
+    const base = "card pane" + (sel ? " sel" : "") + (r.state === "notcreated" ? " ghost" : "") + (stale ? " off" : "");
+    if (r.state === "notcreated") {
+      return `<div class="${base}">
+        <h4 class="pane-hd">${esc(r.tpl)}</h4>
+        <div class="card-hd"><span class="dim">○</span>${statusHTML(r)}</div>
+        <div class="hint dim">ssh ${r.tpl}@${HOST} to create</div>
+        <div class="card-pod dimmer">${r.pod}</div>
+      </div>`;
+    }
+    return `<div class="${base}">
+      <h4 class="pane-hd">${sel ? "▸ " : ""}${esc(r.tpl)}</h4>
+      <div class="card-hd">${statusHTML(r)}</div>
+      <div class="card-up">${r.up}</div>
+      <div class="card-meta dim">${esc(r.runtime)}</div>
+      <div class="card-img dim">${esc(r.image)}</div>
+      <div class="card-meta dim">${r.limits} · ${r.restarts} restart${r.restarts === 1 ? "" : "s"}</div>
+      <div class="card-pod dimmer">${r.pod}</div>
+    </div>`;
+  }).join("");
+
+  const dialogHTML = dialog ? `
+    <div class="overlay"><div class="modal">
+      <h4 class="pane-hd">delete ${esc(SEL)}</h4>
+      <div class="bold">Delete box "${SEL}" (${selRow().pod})?</div>
+      ${consequences(selRow())}
+      ${dialogDisabledNote()}
+      <div class="act">${confirmKeys}</div>
+    </div></div>` : "";
+
+  return `<div class="vB${conn === "unreachable" ? " off" : ""}">
+    <div class="vB-hd">
+      <span class="bold">dev.box settings</span><span class="dim">· ${esc(OWNER)}</span>
+      <span class="right dim">refreshed 2s ago</span><span>${connBadge()}</span>
+    </div>
+    <div class="vB-grid">${cards}</div>
+    ${connNote()}
+    <div class="vB-ft">${keysBar("↑/↓ select · r refresh · d delete · q quit")}</div>
+    ${dialogHTML}
+  </div>`;
+}
+
+/* ================================================================ */
+/* Variant C — master–detail                                         */
+/* ================================================================ */
+function renderC() {
+  const list = ROWS.map(r => {
+    const sel = r.tpl === SEL;
+    return `<div class="lrow${sel ? " sel" : ""}${isStale(r) ? " off" : ""}">
+      <span>${statusHTML(r)}</span>
+      <span class="${sel ? "bold" : "dim"}">${sel ? "▸ " : "  "}${esc(r.tpl)}</span>
+      <span class="st dim">${r.state === "notcreated" ? "—" : r.up}</span>
+    </div>`;
+  }).join("");
+
+  const r = selRow();
+  const detail = `
+    <div class="detail pane">
+      <h4 class="pane-hd">${esc(r.tpl)} <span class="dim" style="font-weight:400">${r.pod}</span></h4>
+      <div class="kv">
+        <div class="k">STATUS</div><div>${statusHTML(r)}</div>
+        <div class="k">UPTIME</div><div>${r.up}</div>
+        <div class="k">IMAGE</div><div>${esc(r.image)}</div>
+        <div class="k">RUNTIME</div><div>${esc(r.runtime)}</div>
+        <div class="k">LIMITS</div><div>${r.limits}</div>
+        <div class="k">RESTARTS</div><div>${r.restarts}</div>
+      </div>
+      <div class="del${dialog ? " armed" : ""}">
+        <h4 class="pane-hd">! delete — irreversible</h4>
+        ${consequences(r)}
+        ${dialogDisabledNote()}
+        <div class="act">${dialog
+          ? confirmKeys
+          : `<span class="dim">[ d ] delete this box</span>`}
+        </div>
+      </div>
+    </div>`;
+
+  return `<div class="vC${conn === "unreachable" ? " off" : ""}">
+    <div class="list pane">
+      <h4 class="pane-hd">boxes</h4>
+      ${list}
+    </div>
+    ${detail}
+  </div>
+  ${connNote()}
+  <div class="vC-ft">${keysBar("↑/↓ select · r refresh · d delete · q quit")}</div>`;
+}
+
+/* ================================================================ */
+/* Variant D — focus (one box at a time)                             */
+/* ================================================================ */
+function renderD() {
+  const r = selRow();
+  const idx = ROWS.findIndex(x => x.tpl === r.tpl) + 1;
+  let hero;
+  if (dialog) {
+    hero = `
+      <div class="hero pane">
+        <h4 class="pane-hd">delete ${esc(r.tpl)}</h4>
+        <div class="line bold">Delete box "${r.tpl}" (${r.pod})?</div>
+        ${consequences(r)}
+        ${dialogDisabledNote()}
+        <div class="line" style="margin-top:10px">${confirmKeys}</div>
+      </div>`;
+  } else {
+    hero = `
+      <div class="hero pane">
+        <h4 class="pane-hd">${esc(r.tpl)}</h4>
+        <div class="line">${statusHTML(r)}</div>
+        <div class="up">${r.up}</div>
+        <div class="line dim">${esc(r.runtime)} · ${r.limits} · ${r.restarts} restart${r.restarts === 1 ? "" : "s"}</div>
+        <div class="line dim">${esc(r.image)}</div>
+        <div class="line dimmer">${r.pod}</div>
+      </div>`;
+  }
+  return `<div class="vD${conn === "unreachable" ? " off" : ""}">
+    <div class="vD-hd">
+      <span class="bold">dev.box settings</span><span class="dim">· ${esc(OWNER)}</span>
+      <span class="right">${connBadge()}</span>
+    </div>
+    <div class="vD-center">
+      <div class="pager dim">◀ ${idx}/${ROWS.length} ▶ <span class="dimmer">n/p</span></div>
+      ${hero}
+      ${connNote()}
+      <div class="keys">${keysBar("n/p box · r refresh · d delete · q quit")}</div>
+    </div>
+  </div>`;
+}
+
+/* ---- render + switcher wiring ---- */
+const RENDERERS = [renderA, renderB, renderC, renderD];
+
+function render() {
+  document.getElementById("screen").innerHTML = RENDERERS[vi]();
+  const v = VARIANTS[vi];
+  document.getElementById("swlabel").textContent = `${v.key} · ${v.name}`;
+  document.getElementById("caption").innerHTML =
+    `<b>${v.key} — ${v.name}:</b> ${v.desc} <span class="dimmer">(sample rows; dialog ${dialog ? "on" : "off"}, connection ${conn})</span>`;
+  document.getElementById("dlgBtn").textContent = `dialog: ${dialog ? "on" : "off"}`;
+  document.getElementById("connBtn").textContent = `conn: ${conn[0].toUpperCase()}${conn.slice(1)}`;
+  try {
+    history.replaceState(null, "", "?variant=" + v.key);
+  } catch (e) { /* file:// quirks; state still cycles in-memory */ }
+}
+
+function cycle(d) { vi = (vi + d + VARIANTS.length) % VARIANTS.length; render(); }
+function cycleConn() {
+  conn = conn === "live" ? "partial" : conn === "partial" ? "unreachable" : "live";
+  render();
+}
+
+document.getElementById("prev").addEventListener("click", () => cycle(-1));
+document.getElementById("next").addEventListener("click", () => cycle(1));
+document.getElementById("dlgBtn").addEventListener("click", () => { dialog = !dialog; render(); });
+document.getElementById("connBtn").addEventListener("click", cycleConn);
+
+document.addEventListener("keydown", e => {
+  const t = e.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+  if (e.key === "ArrowLeft")  { e.preventDefault(); cycle(-1); }
+  else if (e.key === "ArrowRight") { e.preventDefault(); cycle(1); }
+  else if (e.key === "d" || e.key === "D") { dialog = !dialog; render(); }
+  else if (e.key === "c" || e.key === "C") { cycleConn(); }
+});
+
+/* initial variant from ?variant=, reload-stable */
+(function init() {
+  const q = new URLSearchParams(location.search).get("variant");
+  const i = VARIANTS.findIndex(v => v.key === (q || "").toUpperCase());
+  if (i >= 0) vi = i;
+  render();
+})();
+</script>
+</body>
+</html>
