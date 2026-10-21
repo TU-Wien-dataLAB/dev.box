@@ -46,7 +46,7 @@ type boxClient interface {
 }
 
 // podInfo carries exactly the fields a plain pod get renders: status, start
-// time, image, runtime class, restart count, and resource limits.
+// time, image, runtime class, restart count, and resource requests/limits.
 type podInfo struct {
 	Metadata struct {
 		Name              string     `json:"name"`
@@ -58,7 +58,8 @@ type podInfo struct {
 			Name      string `json:"name"`
 			Image     string `json:"image"`
 			Resources struct {
-				Limits map[string]string `json:"limits"`
+				Requests map[string]string `json:"requests"`
+				Limits   map[string]string `json:"limits"`
 			} `json:"resources"`
 		} `json:"containers"`
 	} `json:"spec"`

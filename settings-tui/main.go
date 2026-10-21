@@ -10,6 +10,10 @@
 //
 //	DEV_BOX_AUTHENTICATED_OWNER  the server-verified identity
 //	DEV_BOX_BOX_TEMPLATES        comma-separated persistent box template names
+//	DEV_BOX_MAX_BOXES            per-owner box cap for the created N/max line
+//	                              (0/unset hides the element; the count itself
+//	                              is advisory — the config server is
+//	                              authoritative)
 //
 // Failing closed means exiting with an explanatory message: there is no shell
 // in the image to fall back to.
@@ -54,13 +58,17 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	maxBoxes, err := parseMaxBoxes(os.Getenv(maxBoxesEnv))
+	if err != nil {
+		return err
+	}
 	// A missing client is a degraded deployment, not a crash: the UI stays up,
 	// reports Unreachable, dims its rows, and disables delete.
 	client, err := newBoxClient()
 	if err != nil {
 		client = unavailableClient{err: err}
 	}
-	_, err = tea.NewProgram(newModel(owner, templates, client, width, height),
+	_, err = tea.NewProgram(newModel(owner, templates, maxBoxes, client, width, height),
 		tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run()
 	return err
 }

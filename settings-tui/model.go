@@ -72,13 +72,16 @@ type boxRow struct {
 	image        string
 	runtimeClass string
 	restarts     int32
+	requests     string
 	limits       string
 }
 
 // boxExists reports whether the row currently represents a live pod object.
+// Rows that never saw their pod (checking, forbidden, unavailable) cannot
+// vouch for existence; a forbidden row only knows authorization was refused.
 func (r boxRow) boxExists() bool {
 	switch r.state {
-	case rowNotCreated, rowChecking, rowUnavailable:
+	case rowNotCreated, rowChecking, rowUnavailable, rowForbidden:
 		return false
 	default:
 		return true
@@ -119,6 +122,7 @@ type deleteDoneMsg struct {
 type settingsModel struct {
 	owner      string
 	templates  []string
+	maxBoxes   int // trusted per-owner cap; 0 disables the cap element
 	client     boxClient
 	rows       []boxRow
 	selected   int
@@ -132,10 +136,11 @@ type settingsModel struct {
 }
 
 // newModel builds the initial model from trusted inputs.
-func newModel(owner string, templates []string, client boxClient, width, height int) settingsModel {
+func newModel(owner string, templates []string, maxBoxes int, client boxClient, width, height int) settingsModel {
 	m := settingsModel{
 		owner:     owner,
 		templates: templates,
+		maxBoxes:  maxBoxes,
 		client:    client,
 		rows:      make([]boxRow, len(templates)),
 		conn:      connChecking,
@@ -259,7 +264,7 @@ func (m *settingsModel) applyRefresh(results []rowResult) {
 			ok++
 			row.state = rowNotCreated
 			row.stale, row.reconnect = false, false
-			row.phase, row.image, row.runtimeClass, row.limits = "", "", "", ""
+			row.phase, row.image, row.runtimeClass, row.requests, row.limits = "", "", "", "", ""
 			row.started, row.restarts = time.Time{}, 0
 		case errors.Is(result.err, errForbidden):
 			failed++
@@ -314,9 +319,10 @@ func (r *boxRow) apply(pod *podInfo, now time.Time) {
 	if len(pod.Spec.Containers) > 0 {
 		container := pod.Spec.Containers[0]
 		r.image = container.Image
-		r.limits = formatLimits(container.Resources.Limits)
+		r.requests = formatMemCPU(container.Resources.Requests)
+		r.limits = formatMemCPU(container.Resources.Limits)
 	} else {
-		r.image, r.limits = "", "—"
+		r.image, r.requests, r.limits = "", "—", "—"
 	}
 	r.runtimeClass = "default"
 	if pod.Spec.RuntimeClassName != nil && *pod.Spec.RuntimeClassName != "" {
@@ -408,4 +414,19 @@ func clamp(index, length int) int {
 		return length - 1
 	}
 	return index
+}
+
+// createdCount is how many of the owner's listed boxes currently exist as
+// pods (any phase, including Terminating). It is advisory display data for
+// the cap line: the config server's cap check lists all live owner pods and
+// stays authoritative, so boxes from templates no longer published to this
+// owner can make the true count higher than what the UI can see.
+func (m settingsModel) createdCount() int {
+	n := 0
+	for _, row := range m.rows {
+		if row.boxExists() {
+			n++
+		}
+	}
+	return n
 }

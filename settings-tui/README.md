@@ -1,10 +1,12 @@
 # Settings TUI
 
 Standalone Go + Bubble Tea application: the dev.box management UI. It is not an SSH server (no
-Wish, no shell — there is no shell in the image). Over `ssh -t settings@host` it shows one row per
-box template published for the verified owner — live status, uptime, image, runtime class, restart
-count, resource limits — refreshed every few seconds from the Kubernetes API, and offers exactly
-one management action: **delete** (confirm with `y`).
+Wish, no shell — there is no shell in the image). Over `ssh -t settings@host` it shows a
+master–detail screen — one master row per box template published for the verified owner
+(name left, state right), and a detail pane for the selected box with its status strip
+(status, uptime, restarts) and ledger (image, runtime class, resource requests and limits) —
+refreshed every few seconds from the Kubernetes API, plus a per-owner box-cap line. It offers
+exactly one management action: **delete** (confirm with `y`).
 
 ## Build, run, and check locally
 
@@ -42,6 +44,14 @@ startup failures, shell absence, and agent console/idle-signal compatibility.
   (`box-` + first 10 hex of SHA-256 over trimmed owner + NUL + template — the same contract as the
   config server's persistent naming, pinned by golden tests against the live cluster). Template
   names never come from client input.
+- Box cap: **`DEV_BOX_MAX_BOXES`** carries the operator-set per-owner box cap from the same trusted
+  plumbing (the config server injects its enforced `CONTAINERSSH_MAX_PODS_PER_USER`; `0`/unset
+  hides the element). The master pane foots it as `created N/max` with a block bar; at the cap
+  the bar turns yellow and names the way out. The count is advisory display data derived from the
+  owner's own rows (any phase counts, including Terminating; not-created rows do not): the TUI has
+  no pod-list permission, and the config server's list-based check stays authoritative — a box
+  created from a template no longer published to this owner is invisible to the count but still
+  consumes the real cap. Malformed values fail closed with exit 1.
 - Kubernetes access: per-name pod **get** and **delete** through the pod's mounted projected
   token, using in-cluster configuration (service env, token file, CA) in the pod's own namespace.
   No list, watch, or other verb exists in the client. The whole surface sits behind a small
@@ -55,13 +65,14 @@ startup failures, shell absence, and agent console/idle-signal compatibility.
   Initial dimensions may arrive after the agent PID handshake; startup waits up to two seconds for
   a zero-sized PTY to become usable. Otherwise it exits 1 with a helpful `ssh -t` hint, without
   opening a fallback `/dev/tty`. Non-PTY use fails immediately; checks precede Bubble Tea execution.
-- UI: `↑/↓` or `j`/`k` select; `r` refreshes now (plus an automatic poll every ~3 s); `d` opens
-  the delete confirmation for the selected existing box; `y` confirms; `n`/`Esc`/`q` cancel.
-  `q` or Ctrl+C quits from the list view; inside a dialog they only cancel. The confirmation
-  states all three consequences: local data destroyed (no PVC exists), active sessions killed, and
-  a fresh box on the next login to that template. A deleted box shows **Terminating** until it is
-  gone, then settles into the same dimmed **not created** row as never-instantiated templates,
-  which name the exact `ssh <template>@<host>` command that creates them.
+- UI: `↑/↓` or `j`/`k` select (the detail pane follows); `r` refreshes now (plus an automatic poll
+  every ~3 s); `d` opens a centered delete-confirmation popup for the selected existing box; `y`
+  confirms; `n`/`Esc`/`q` cancel. `q` or Ctrl+C quits from the list view; inside the popup they
+  only cancel. The popup states all three consequences: local data destroyed (no PVC exists),
+  active sessions killed, and a fresh box on the next login to that template. A deleted box shows
+  **Terminating** until it is gone, then settles into the same dimmed **not created** row as
+  never-instantiated templates; the detail pane of a not-created box names the exact
+  `ssh <template>@<host>` command that creates it.
 - Honesty: a status line reports **Live**, **Partial**, or **Unreachable**; failed rows keep
   their last-known state dimmed; a per-name authorization failure (403) shows a reconnect hint
   because the template list and grants are fixed per settings connection; delete is unavailable
@@ -69,10 +80,12 @@ startup failures, shell absence, and agent console/idle-signal compatibility.
   explicit empty state with delete unavailable.
 - Display: all dynamic text (owner, images, runtime classes, API messages) is sanitized to printable
   runes — controls, bidi/format characters, and non-printing separators become `?`; nothing is ever
-  parsed as ANSI markup. Rows are status-tinted (running green, pending/terminating yellow, error
-  red, not-created dim); `NO_COLOR` or `TERM=dumb`/unset fall back to plain text. Lines are
-  clipped with an ellipsis rather than wrapping; small terminals collapse to compact headers, and
-  at one/two rows the quit hint takes priority.
+  parsed as ANSI markup. The master list shows only the template name and the state word
+  (status-tinted: running green, pending/terminating yellow, error red, not-created dim; the footer
+  right-aligns the verified owner and connection state). Lines are clipped with an ellipsis rather
+  than wrapping; terminals without room for the two panes collapse to a master-only view, then to
+  single-column rows, then compact headers, and at one/two rows the quit hint takes priority.
+  `NO_COLOR` or `TERM=dumb`/unset fall back to plain text.
 - Runtime: scratch, UID/GID 1000, passwd/group records, no shell or credentials. Bubble Tea
   **v2.1.0** and all module dependencies are pinned in `go.mod`/`go.sum`; the Go **1.26.7** builder
   is digest-pinned in the Dockerfile. The Kubernetes client is hand-rolled over the standard

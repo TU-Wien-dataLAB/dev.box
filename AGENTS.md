@@ -204,12 +204,19 @@ ssh ubuntu@dev.box.example.com
   template that only sets labels keeps the base pod's containers/spec.
 - **Settings / merge boundary:** `settings` is always code-owned, connection-mode, one session
   per transport, direct `/usr/local/bin/dev-box-settings` (no shell wrapper), PTY/application-shell
-  only; exec/subsystem/env/signal/forwarding denied. The TUI is the **management UI**: one row per
-  trusted template (status, uptime, image, runtime, restarts, limits), ~3 s polling, and exactly one
-  action — delete behind a `y`-confirmation naming all three consequences. Owner env is the
+  only; exec/subsystem/env/signal/forwarding denied. The TUI is the **management UI** (master–detail,
+  validated as HTML prototype "C4" on a throwaway branch): master rows carry only the template
+  name (left) and the state word (right); the selected box's detail pane carries a status strip
+  (status, uptime, restarts) over a ledger (image, runtime, requests, limits); the master pane is
+  footed by the per-owner cap line `created N/max`; ~3 s polling; and exactly one action — delete
+  behind a centered `y`-confirmation popup naming all three consequences. Owner env is the
   raw server-verified identity (blank denied); display sanitization never changes authorization.
   `DEV_BOX_BOX_TEMPLATES` carries the owner's ordinary persistent template names from the same walk
-  that computes the Role's `resourceNames` (empty list valid; unreadable templates deny). The TUI
+  that computes the Role's `resourceNames` (empty list valid; unreadable templates deny).
+  `DEV_BOX_MAX_BOXES` carries the operator's enforced cap (config-server injects its
+  `CONTAINERSSH_MAX_PODS_PER_USER`; 0/unset hides the element); the UI's count is advisory — it is
+  derived from the owner's own rows (Terminating counts, not-created does not; no list permission
+  exists) while the config server's list-based check stays authoritative. The TUI
   recomputes each box's deterministic name with the persistent hashing contract (trimmed owner +
   NUL + template, pinned by golden tests) and reads/deletes pods only through the owner's projected
   token. `DEV_BOX_KUBE_API_URL` is the offline-validation override for the Docker smoke; the config

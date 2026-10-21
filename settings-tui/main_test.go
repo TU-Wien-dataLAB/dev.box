@@ -205,15 +205,17 @@ type fakeAPI struct {
 }
 
 type podDoc struct {
-	name         string
-	phase        string
-	startedAgo   time.Duration
-	terminating  bool
-	restarts     int32
-	image        string
-	runtimeClass string
-	limitsCPU    string
-	limitsMemory string
+	name           string
+	phase          string
+	startedAgo     time.Duration
+	terminating    bool
+	restarts       int32
+	image          string
+	runtimeClass   string
+	requestsCPU    string
+	requestsMemory string
+	limitsCPU      string
+	limitsMemory   string
 }
 
 func newFakeAPI(t *testing.T) *fakeAPI {
@@ -291,10 +293,10 @@ func writePod(w http.ResponseWriter, doc *podDoc) {
 	fmt.Fprintf(w, `{
 		"metadata": {"name": %q%s},
 		"spec": {"runtimeClassName": %q, "containers": [{"name": "shell", "image": %q,
-			"resources": {"limits": {"cpu": %q, "memory": %q}}}]},
+			"resources": {"requests": {"cpu": %q, "memory": %q}, "limits": {"cpu": %q, "memory": %q}}}]},
 		"status": {"phase": %q, "startTime": %q, "containerStatuses": [{"restartCount": %d}]}
 	}`, doc.name, terminationJSON(doc.terminating), doc.runtimeClass, doc.image,
-		doc.limitsCPU, doc.limitsMemory, doc.phase, start, doc.restarts)
+		doc.requestsCPU, doc.requestsMemory, doc.limitsCPU, doc.limitsMemory, doc.phase, start, doc.restarts)
 }
 
 func terminationJSON(terminating bool) string {
@@ -569,32 +571,41 @@ func TestManagementListSelectDeleteAndRecreate(t *testing.T) {
 	ubuntu := boxName("alice.example", "ubuntu")
 	api.pods[ubuntu] = &podDoc{name: ubuntu, phase: "Running", startedAgo: 2 * time.Hour,
 		restarts: 1, image: "containerssh/containerssh-guest-image",
-		runtimeClass: "kata-qemu-runtime-rs", limitsCPU: "500m", limitsMemory: "1Gi"}
-	s := openTerminal(t, api.envFor("alice.example", "ubuntu,data-engine", "NO_COLOR=1"), 140, 24)
+		runtimeClass: "kata-qemu-runtime-rs",
+		requestsCPU:  "250m", requestsMemory: "512Mi", limitsCPU: "500m", limitsMemory: "1Gi"}
+	s := openTerminal(t, api.envFor("alice.example", "ubuntu,data-engine", "NO_COLOR=1", "DEV_BOX_MAX_BOXES=2"), 140, 24)
 
+	// The sorted master list starts at data-engine (not created); its detail
+	// pane names the create command, and the master pane foots the box cap.
 	s.expect(t,
-		"Owner: alice.example",
-		"Connection: Live",
+		"Owner: alice.example · Live",
+		"data-engine",
+		"not created",
 		"ubuntu",
 		"Running",
-		"up 2h",
-		"containerssh/containerssh-guest-image",
-		"kata-qemu-runtime-rs",
-		"restarts 1",
-		"1Gi/500m",
-		"data-engine",
-		"not created · ssh data-engine@<host>",
+		"ssh data-engine@<host> creates this box",
+		"created 1/2",
 	)
-
 	// Delete is never offered for a box that does not exist: the initially
 	// selected first row (alphabetical) is the not-created data-engine.
 	s.input(t, "d")
 	s.expect(t, "data-engine is not created; log in as data-engine@<host> to create it")
 
-	// j/k and arrows move the selection; the delete dialog always names the
-	// selected box, which is visible proof of the selection (the differential
-	// renderer never rewrites unchanged row text).
+	// Selecting ubuntu swaps the detail pane to its status strip and ledger.
 	s.input(t, "j")
+	s.expect(t,
+		"up 2h",
+		"RESTARTS",
+		"containerssh/containerssh-guest-image",
+		"kata-qemu-runtime-rs",
+		"REQUESTS",
+		"512Mi/250m",
+		"LIMITS",
+		"1Gi/500m",
+	)
+
+	// j/k and arrows move the selection; the delete popup always names the
+	// selected box, which is visible proof of the selection.
 	s.input(t, "d")
 	s.expect(t, "Delete box \"ubuntu\" ("+ubuntu+")?")
 	s.input(t, "n")
@@ -620,12 +631,13 @@ func TestManagementListSelectDeleteAndRecreate(t *testing.T) {
 		return api.gets >= before+2
 	})
 
-	// Cancel keeps the box; the dialog lists all three consequences.
+	// Cancel keeps the box; the popup lists all three consequences.
 	s.input(t, "d")
 	s.expect(t, "Delete box \"ubuntu\" ("+ubuntu+")?",
 		"all data on the box's local disk is destroyed",
 		"active sessions in the box are killed",
-		"a fresh box is created on your next login: ssh ubuntu@<host>")
+		"a fresh box is created on your next login:",
+		"ssh ubuntu@<host>")
 	s.input(t, "n")
 	mark = s.mark()
 	time.Sleep(200 * time.Millisecond)
@@ -651,7 +663,9 @@ func TestManagementListSelectDeleteAndRecreate(t *testing.T) {
 	delete(api.pods, ubuntu)
 	api.mu.Unlock()
 	mark = s.mark()
-	s.expectFrom(t, mark, "not created · ssh ubuntu@<host>")
+	// The differential renderer may repaint only changed cells, so assert the
+	// redrawn count, not the contiguous "created 0/2" line.
+	s.expectFrom(t, mark, "ssh ubuntu@<host> creates this box", "0/2")
 	s.input(t, "q")
 	s.exit(t, true)
 }
@@ -669,7 +683,7 @@ func TestManagementUnreachableDisablesDelete(t *testing.T) {
 		"DEV_BOX_KUBE_API_URL=http://"+address,
 		"DEV_BOX_KUBE_NAMESPACE=containerssh-sessions",
 		"DEV_BOX_BOX_TEMPLATES=ubuntu"), 120, 24)
-	s.expect(t, "Connection: Unreachable", "unreachable", "q: quit")
+	s.expect(t, "Unreachable", "unreachable", "q: quit")
 	s.input(t, "d")
 	s.expect(t, "delete is unavailable")
 	s.input(t, "y") // never confirmable without a dialog
@@ -682,9 +696,10 @@ func TestManagementPartialAndForbiddenRows(t *testing.T) {
 	ubuntu := boxName("alice.example", "ubuntu")
 	api.pods[ubuntu] = &statusDoc{code: http.StatusForbidden, reason: "Forbidden", message: "grants changed"}
 	s := openTerminal(t, api.envFor("alice.example", "ubuntu,data-engine", "NO_COLOR=1"), 130, 24)
-	s.expect(t, "Connection: Partial", "ubuntu", "reconnect")
-	// The forbidden row explains how to recover: reconnect settings.
-	s.expect(t, "authorization changed")
+	s.expect(t, "Partial", "ubuntu", "reconnect")
+	// The selected forbidden row explains how to recover: reconnect settings.
+	s.input(t, "j") // the sorted list puts ubuntu second
+	s.expect(t, "authorization changed", "reconnect settings to refresh")
 	s.input(t, "q")
 	s.exit(t, true)
 }
@@ -718,9 +733,36 @@ func TestManagementRejectsMissingToken(t *testing.T) {
 		"DEV_BOX_NAMESPACE=containerssh-sessions",
 		"DEV_BOX_BOX_TEMPLATES=ubuntu") // no DEV_BOX_KUBE_API_TOKEN
 	s := openTerminal(t, env, 120, 24)
-	s.expect(t, "Connection: Unreachable")
+	s.expect(t, "Unreachable")
 	s.input(t, "q")
 	s.exit(t, true)
+}
+
+// The trusted cap env renders the created N/max line and fails closed when
+// malformed.
+func TestMaxBoxesEnvRendersCapAndFailsClosed(t *testing.T) {
+	api := newFakeAPI(t)
+	ubuntu := boxName("alice.example", "ubuntu")
+	api.pods[ubuntu] = &podDoc{name: ubuntu, phase: "Running", startedAgo: time.Hour,
+		restarts: 0, image: "guest-image", runtimeClass: "kata-qemu-runtime-rs",
+		requestsCPU: "250m", requestsMemory: "512Mi", limitsCPU: "500m", limitsMemory: "1Gi"}
+	s := openTerminal(t, api.envFor("alice.example", "ubuntu,data-engine", "NO_COLOR=1",
+		"DEV_BOX_MAX_BOXES=2"), 120, 24)
+	s.expect(t, "created 1/2")
+	// The selected box's detail pane carries its requests.
+	s.input(t, "j")
+	s.expect(t, "REQUESTS", "512Mi/250m")
+	s.input(t, "q")
+	s.exit(t, true)
+
+	// A malformed trusted cap fails closed before the UI opens.
+	bad := openTerminal(t, environment("alice.example", "DEV_BOX_BOX_TEMPLATES=ubuntu",
+		"DEV_BOX_MAX_BOXES=three"), 80, 24)
+	bad.exit(t, false)
+	bad.expect(t, "DEV_BOX_MAX_BOXES")
+	if strings.Contains(bad.text(), "q: quit") {
+		t.Fatal("malformed trusted cap opened the UI")
+	}
 }
 
 func TestManagementColorsAreUsedOnColorTerminals(t *testing.T) {

@@ -52,7 +52,8 @@ func runningPod(name string) *podInfo {
 		"spec": {
 			"runtimeClassName": "kata-qemu-runtime-rs",
 			"containers": [{"name": "shell", "image": "containerssh/containerssh-guest-image",
-				"resources": {"limits": {"cpu": "500m", "memory": "1Gi"}}}]
+				"resources": {"requests": {"cpu": "250m", "memory": "512Mi"},
+					"limits": {"cpu": "500m", "memory": "1Gi"}}}]
 		},
 		"status": {
 			"phase": "Running",
@@ -153,28 +154,36 @@ func TestRefreshAssemblesRowsFromGets(t *testing.T) {
 	client := &fakeClient{pods: map[string]*podInfo{
 		boxPodName("alice", "ubuntu"): runningPod(boxPodName("alice", "ubuntu")),
 	}}
-	m := newModel("alice", []string{"ubuntu", "data-engine"}, client, 120, 24)
+	m := newModel("alice", []string{"ubuntu", "data-engine"}, 0, client, 120, 24)
 	m = driveRefresh(t, m)
 	if m.conn != connLive {
 		t.Fatalf("connection = %v, want Live", m.conn)
 	}
 	text := view(m)
 	for _, fragment := range []string{
-		"Owner: alice",
-		"Connection: Live",
+		"Owner: alice · Live",
 		"ubuntu",
 		"Running",
 		"up 2h",
+		"STATUS",
+		"RESTARTS",
 		"containerssh/containerssh-guest-image",
 		"kata-qemu-runtime-rs",
-		"restarts 1",
+		"REQUESTS",
+		"512Mi/250m",
+		"LIMITS",
 		"1Gi/500m",
 		"data-engine",
-		"not created · ssh data-engine@" + sshHostPlaceholder,
 	} {
 		if !strings.Contains(text, fragment) {
 			t.Errorf("row render missing %q in:\n%s", fragment, text)
 		}
+	}
+	// The detail pane follows the selection: data-engine (not created) names
+	// the create command.
+	m = press(t, m, key('j'))
+	if !strings.Contains(view(m), "ssh data-engine@"+sshHostPlaceholder+" creates this box") {
+		t.Fatalf("not-created detail lost the create hint:\n%s", view(m))
 	}
 	if strings.Count(text, "▸") != 1 {
 		t.Fatalf("selection marker count = %d", strings.Count(text, "▸"))
@@ -184,7 +193,7 @@ func TestRefreshAssemblesRowsFromGets(t *testing.T) {
 func TestRefreshKeepsLastKnownRowsAndReportsHonestStatus(t *testing.T) {
 	name := boxPodName("alice", "ubuntu")
 	client := &fakeClient{pods: map[string]*podInfo{name: runningPod(name)}}
-	m := newModel("alice", []string{"ubuntu", "data-engine"}, client, 120, 24)
+	m := newModel("alice", []string{"ubuntu", "data-engine"}, 0, client, 120, 24)
 	m = driveRefresh(t, m)
 	if m.conn != connLive {
 		t.Fatalf("connection = %v, want Live", m.conn)
@@ -199,8 +208,13 @@ func TestRefreshKeepsLastKnownRowsAndReportsHonestStatus(t *testing.T) {
 	if m.conn != connUnreachable {
 		t.Fatalf("connection = %v, want Unreachable", m.conn)
 	}
-	if !strings.Contains(view(m), "Running (last known)") {
-		t.Fatalf("last-known row lost:\n%s", view(m))
+	if !strings.Contains(view(m), "Unreachable") {
+		t.Fatalf("unreachable status not shown:\n%s", view(m))
+	}
+	// The selected row's detail pane explains its last-known data (the
+	// sorted list starts at ubuntu, which carries the stale data).
+	if !strings.Contains(view(m), honestyLastKnown) {
+		t.Fatalf("last-known honesty line lost:\n%s", view(m))
 	}
 	// Partial: one transport failure, one resolved not-created row.
 	delete(client.failures, boxPodName("alice", "data-engine"))
@@ -208,7 +222,7 @@ func TestRefreshKeepsLastKnownRowsAndReportsHonestStatus(t *testing.T) {
 	if m.conn != connPartial {
 		t.Fatalf("connection = %v, want Partial", m.conn)
 	}
-	if !strings.Contains(view(m), "Connection: Partial") {
+	if !strings.Contains(view(m), "Partial") {
 		t.Fatalf("partial status not shown:\n%s", view(m))
 	}
 }
@@ -216,23 +230,23 @@ func TestRefreshKeepsLastKnownRowsAndReportsHonestStatus(t *testing.T) {
 func TestForbiddenRowShowsReconnectHint(t *testing.T) {
 	name := boxPodName("alice", "ubuntu")
 	client := &fakeClient{pods: map[string]*podInfo{}, failures: map[string]error{name: errForbidden}}
-	m := newModel("alice", []string{"ubuntu"}, client, 120, 24)
+	m := newModel("alice", []string{"ubuntu"}, 0, client, 120, 24)
 	m = driveRefresh(t, m)
 	if m.conn != connUnreachable {
 		t.Fatalf("connection = %v", m.conn)
 	}
-	if !strings.Contains(view(m), "reconnect") {
+	if !strings.Contains(view(m), "reconnect") || !strings.Contains(view(m), "authorization changed") {
 		t.Fatalf("reconnect hint missing:\n%s", view(m))
 	}
 	// Mid-session authorization change on a row with last-known data: the
-	// reconnect hint must win over the generic last-known suffix.
+	// reconnect hint must win over the generic last-known line.
 	delete(client.failures, name)
 	client.pods[name] = runningPod(name)
 	m = driveRefresh(t, m)
 	client.failures = map[string]error{name: errForbidden}
 	m = driveRefresh(t, m)
 	text := view(m)
-	if !strings.Contains(text, "Running (reconnect)") {
+	if !strings.Contains(text, honestyReconnect) {
 		t.Fatalf("mid-session forbidden row lost the reconnect hint:\n%s", text)
 	}
 	if !strings.Contains(text, "containerssh/containerssh-guest-image") {
@@ -243,11 +257,11 @@ func TestForbiddenRowShowsReconnectHint(t *testing.T) {
 func TestTerminatingTransitionAfterDelete(t *testing.T) {
 	name := boxPodName("alice", "ubuntu")
 	client := &fakeClient{pods: map[string]*podInfo{name: runningPod(name)}}
-	m := newModel("alice", []string{"ubuntu"}, client, 120, 24)
+	m := newModel("alice", []string{"ubuntu"}, 0, client, 120, 24)
 	m = driveRefresh(t, m)
 
-	// d opens the confirmation; y confirms; the delete completes and an
-	// immediate refresh shows the deleting pod as Terminating.
+	// d opens the centered confirmation popup; y confirms; the delete
+	// completes and an immediate refresh shows the deleting pod as Terminating.
 	m = press(t, m, key('d'))
 	if !strings.Contains(view(m), "Delete box \"ubuntu\" ("+name+")?") {
 		t.Fatalf("confirmation missing:\n%s", view(m))
@@ -255,7 +269,8 @@ func TestTerminatingTransitionAfterDelete(t *testing.T) {
 	for _, consequence := range []string{
 		"all data on the box's local disk is destroyed",
 		"active sessions in the box are killed",
-		"a fresh box is created on your next login: ssh ubuntu@" + sshHostPlaceholder,
+		"a fresh box is created on your next login:",
+		"ssh ubuntu@" + sshHostPlaceholder,
 	} {
 		if !strings.Contains(view(m), consequence) {
 			t.Fatalf("confirmation misses consequence %q:\n%s", consequence, view(m))
@@ -270,18 +285,19 @@ func TestTerminatingTransitionAfterDelete(t *testing.T) {
 	if !strings.Contains(view(m), "Terminating") {
 		t.Fatalf("terminating state not shown:\n%s", view(m))
 	}
-	// Once the pod is gone, the row settles into the dimmed not-created form.
+	// Once the pod is gone, the row settles into the dimmed not-created form
+	// and the detail pane keeps naming the create command.
 	delete(client.pods, name)
 	m = driveRefresh(t, m)
-	if !strings.Contains(view(m), "not created · ssh ubuntu@"+sshHostPlaceholder) {
-		t.Fatalf("post-delete row not dimmed:\n%s", view(m))
+	if !strings.Contains(view(m), "ssh ubuntu@"+sshHostPlaceholder+" creates this box") {
+		t.Fatalf("post-delete detail lost the recreate hint:\n%s", view(m))
 	}
 }
 
 func TestDialogCancelSemantics(t *testing.T) {
 	name := boxPodName("alice", "ubuntu")
 	client := &fakeClient{pods: map[string]*podInfo{name: runningPod(name)}}
-	m := newModel("alice", []string{"ubuntu"}, client, 120, 24)
+	m := newModel("alice", []string{"ubuntu"}, 0, client, 120, 24)
 	m = driveRefresh(t, m)
 
 	for _, cancel := range []tea.KeyPressMsg{
@@ -320,7 +336,7 @@ func TestDeleteRequiresLiveConnectionAndExistingBox(t *testing.T) {
 	client := &fakeClient{pods: map[string]*podInfo{name: runningPod(name)}}
 	// Unreachable: delete is refused with an explanatory message.
 	client.failures = map[string]error{name: errors.New("connection refused")}
-	m := newModel("alice", []string{"ubuntu"}, client, 120, 24)
+	m := newModel("alice", []string{"ubuntu"}, 0, client, 120, 24)
 	m = driveRefresh(t, m)
 	m = press(t, m, key('d'))
 	if m.dialog != dialogNone || len(client.deleted) != 0 {
@@ -344,7 +360,7 @@ func TestDeleteRequiresLiveConnectionAndExistingBox(t *testing.T) {
 }
 
 func TestEmptyTemplateListRendersEmptyState(t *testing.T) {
-	m := newModel("alice", nil, &fakeClient{}, 120, 24)
+	m := newModel("alice", nil, 0, &fakeClient{}, 120, 24)
 	m = driveRefresh(t, m) // zero rows: still Live
 	if m.conn != connLive {
 		t.Fatalf("connection = %v, want Live with no templates", m.conn)
@@ -362,7 +378,7 @@ func TestEmptyTemplateListRendersEmptyState(t *testing.T) {
 func TestDeleteFailuresAreReportedNotSwallowed(t *testing.T) {
 	name := boxPodName("alice", "ubuntu")
 	client := &fakeClient{pods: map[string]*podInfo{name: runningPod(name)}}
-	m := newModel("alice", []string{"ubuntu"}, client, 120, 24)
+	m := newModel("alice", []string{"ubuntu"}, 0, client, 120, 24)
 	m = driveRefresh(t, m)
 	m = press(t, m, key('d'))
 	client.delErr = errForbidden
@@ -379,7 +395,7 @@ func TestPlainRenderingWithoutColors(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	name := boxPodName("alice", "ubuntu")
 	client := &fakeClient{pods: map[string]*podInfo{name: runningPod(name)}}
-	m := newModel("alice", []string{"ubuntu"}, client, 120, 24)
+	m := newModel("alice", []string{"ubuntu"}, 0, client, 120, 24)
 	m = driveRefresh(t, m)
 	if !strings.Contains(view(m), "Running") {
 		t.Fatalf("plain rendering lost the row:\n%s", view(m))
@@ -401,7 +417,7 @@ func TestTinyTerminalsKeepTheFooter(t *testing.T) {
 	name := boxPodName("alice", "ubuntu")
 	client := &fakeClient{pods: map[string]*podInfo{name: runningPod(name)}}
 	for _, size := range [][2]int{{80, 4}, {40, 3}, {20, 2}, {12, 1}} {
-		m := newModel("alice", []string{"ubuntu"}, client, size[0], size[1])
+		m := newModel("alice", []string{"ubuntu"}, 0, client, size[0], size[1])
 		m = driveRefresh(t, m)
 		m = press(t, m, key('d'))
 		text := view(m)
@@ -417,5 +433,65 @@ func TestTinyTerminalsKeepTheFooter(t *testing.T) {
 				t.Fatalf("%dx%d line exceeds width: %q", size[0], size[1], line)
 			}
 		}
+	}
+}
+
+func TestParseMaxBoxes(t *testing.T) {
+	for value, want := range map[string]int{"": 0, "0": 0, "3": 3, " 12 ": 12} {
+		got, err := parseMaxBoxes(value)
+		if err != nil || got != want {
+			t.Fatalf("parseMaxBoxes(%q) = %d, %v; want %d", value, got, err, want)
+		}
+	}
+	for _, bad := range []string{"three", "-1", "1.5"} {
+		if _, err := parseMaxBoxes(bad); err == nil {
+			t.Fatalf("parseMaxBoxes(%q) accepted a malformed cap", bad)
+		}
+	}
+}
+
+func TestCapLineCountsExistingBoxes(t *testing.T) {
+	ubuntu := boxPodName("alice", "ubuntu")
+	data := boxPodName("alice", "data-engine")
+	client := &fakeClient{pods: map[string]*podInfo{ubuntu: runningPod(ubuntu)}}
+	m := newModel("alice", []string{"ubuntu", "data-engine"}, 2, client, 120, 24)
+	m = driveRefresh(t, m)
+	if !strings.Contains(view(m), "created 1/2") {
+		t.Fatalf("cap line missing:\n%s", view(m))
+	}
+	// At the cap the line names the way out.
+	client.pods[data] = runningPod(data)
+	m = driveRefresh(t, m)
+	text := view(m)
+	if !strings.Contains(text, "created 2/2") || !strings.Contains(text, "cap reached") {
+		t.Fatalf("at-cap line lost its hint:\n%s", text)
+	}
+	// Terminating pods still exist and still count toward the cap.
+	client.pods[ubuntu] = terminatingPod(ubuntu)
+	m = driveRefresh(t, m)
+	if !strings.Contains(view(m), "created 2/2") {
+		t.Fatalf("terminating box stopped counting:\n%s", view(m))
+	}
+	// A gone box releases budget.
+	delete(client.pods, ubuntu)
+	m = driveRefresh(t, m)
+	if !strings.Contains(view(m), "created 1/2") {
+		t.Fatalf("gone box still counted:\n%s", view(m))
+	}
+	// maxBoxes 0 disables the element entirely.
+	m0 := newModel("alice", []string{"ubuntu", "data-engine"}, 0, client, 120, 24)
+	m0 = driveRefresh(t, m0)
+	if strings.ContainsAny(view(m0), "█░") {
+		t.Fatalf("cap element rendered with no cap set:\n%s", view(m0))
+	}
+	// Rows that never saw their pod (authorization refused) cannot vouch for
+	// existence and do not count toward the cap.
+	forbidden := &fakeClient{pods: map[string]*podInfo{}, failures: map[string]error{
+		ubuntu: errForbidden, data: errForbidden,
+	}}
+	mf := newModel("alice", []string{"ubuntu", "data-engine"}, 2, forbidden, 120, 24)
+	mf = driveRefresh(t, mf)
+	if !strings.Contains(view(mf), "created 0/2") {
+		t.Fatalf("never-seen rows counted toward the cap:\n%s", view(mf))
 	}
 }

@@ -76,9 +76,10 @@ func TestSettingsReceivesVerifiedOwnerWithoutOccupyingPersistentQuota(t *testing
 		t.Fatalf("settings became a persistent box: %+v", pod.Metadata)
 	}
 	env := pod.Spec.Containers[0].Env
-	if len(env) != 2 || env[0].Name != "DEV_BOX_AUTHENTICATED_OWNER" || env[0].Value != "alice" ||
-		env[1].Name != "DEV_BOX_BOX_TEMPLATES" || env[1].Value != "ubuntu" {
-		t.Fatalf("settings env = %+v; want exactly the verified owner and box template list", env)
+	if len(env) != 3 || env[0].Name != "DEV_BOX_AUTHENTICATED_OWNER" || env[0].Value != "alice" ||
+		env[1].Name != "DEV_BOX_BOX_TEMPLATES" || env[1].Value != "ubuntu" ||
+		env[2].Name != "DEV_BOX_MAX_BOXES" || env[2].Value != "3" {
+		t.Fatalf("settings env = %+v; want the verified owner, the box template list, and the enforced cap", env)
 	}
 }
 
@@ -152,20 +153,20 @@ func TestSettingsOwnersAreIsolatedAcrossConcurrentConnections(t *testing.T) {
 func TestSettingsTemplateListIsThePersistentBoxSurface(t *testing.T) {
 	h := settingsHandler(t)
 	h.dir = testTemplateDir(t, map[string]string{
-		"zeta.yaml":       "{}",
-		"ubuntu.yaml":     "{}",
-		"alpha.json":      "{}",
-		"ephemeral.yaml":  "kubernetes:\n  pod:\n    mode: connection\n",
-		"settings.yaml":   "{}",
-		"ignored.txt":     "{}",
-		"bad name.yaml":   "{}",
+		"zeta.yaml":      "{}",
+		"ubuntu.yaml":    "{}",
+		"alpha.json":     "{}",
+		"ephemeral.yaml": "kubernetes:\n  pod:\n    mode: connection\n",
+		"settings.yaml":  "{}",
+		"ignored.txt":    "{}",
+		"bad name.yaml":  "{}",
 	})
 	cfg, err := h.OnConfig(configRequest("settings", "alice"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	env := cfg.Kubernetes.Pod.Spec.Containers[0].Env
-	if len(env) != 2 || env[1].Name != "DEV_BOX_BOX_TEMPLATES" || env[1].Value != "alpha,ubuntu,zeta" {
+	if len(env) != 3 || env[1].Name != "DEV_BOX_BOX_TEMPLATES" || env[1].Value != "alpha,ubuntu,zeta" {
 		t.Fatalf("settings template list = %+v, want sorted persistent ordinary templates", env)
 	}
 	// The Role grants get/delete on exactly those templates' deterministic names.
@@ -207,8 +208,8 @@ func TestSettingsEmptyTemplateListStillServes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-		env := cfg.Kubernetes.Pod.Spec.Containers[0].Env
-			if len(env) != 2 || env[1].Value != "" {
+			env := cfg.Kubernetes.Pod.Spec.Containers[0].Env
+			if len(env) != 3 || env[1].Value != "" {
 				t.Fatalf("empty template list = %+v, want a present-but-empty trusted list", env)
 			}
 			role, err := h.kube.RbacV1().Roles(h.boxes.namespace).Get(
@@ -244,5 +245,20 @@ func TestSettingsCannotBeOverriddenByATemplateFile(t *testing.T) {
 		if cfg.Kubernetes.Pod.Mode != config.KubernetesExecutionModeConnection || cfg.Kubernetes.Pod.Spec.Containers[0].Image != "settings:test" {
 			t.Fatal("template file overrode reserved application")
 		}
+	}
+}
+
+// A disabled cap still reaches the UI as 0, which hides the element exactly
+// when no cap is enforced.
+func TestSettingsSendsDisabledCapAsZero(t *testing.T) {
+	h := settingsHandler(t)
+	h.boxes.maxPods = 0
+	cfg, err := h.OnConfig(configRequest("settings", "alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := cfg.Kubernetes.Pod.Spec.Containers[0].Env
+	if len(env) != 3 || env[2].Name != "DEV_BOX_MAX_BOXES" || env[2].Value != "0" {
+		t.Fatalf("disabled cap env = %+v; want DEV_BOX_MAX_BOXES=0", env)
 	}
 }

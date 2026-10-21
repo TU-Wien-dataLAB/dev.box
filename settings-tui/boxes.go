@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -20,6 +21,10 @@ const (
 	// templatesEnv carries the owner's current ordinary persistent box
 	// template names, comma-separated, from the operator-managed store.
 	templatesEnv = "DEV_BOX_BOX_TEMPLATES"
+	// maxBoxesEnv carries the operator-set per-owner box cap from the same
+	// trusted plumbing as the template list. Unset, empty, and "0" disable
+	// the cap element; the count it annotates is advisory (see createdCount).
+	maxBoxesEnv = "DEV_BOX_MAX_BOXES"
 )
 
 // boxPodName derives the deterministic persistent pod name for an (owner,
@@ -54,6 +59,21 @@ func parseTemplates(value string) ([]string, error) {
 	}
 	sort.Strings(templates)
 	return templates, nil
+}
+
+// parseMaxBoxes reads the trusted per-owner box cap. Unset, empty, and "0"
+// disable the cap element; any other malformed value fails closed like the
+// template list.
+func parseMaxBoxes(value string) (int, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("trusted %s is not a non-negative integer: %q; contact the operator", maxBoxesEnv, value)
+	}
+	return n, nil
 }
 
 // validTemplateName matches the config server's template-name charset so the
@@ -95,10 +115,11 @@ func formatUptime(started time.Time, now time.Time) string {
 	}
 }
 
-// formatLimits renders a container's resource limits as "mem/cpu", e.g.
-// "1Gi/500m". Kubernetes quantities are printed as declared.
-func formatLimits(limits map[string]string) string {
-	memory, cpu := limits["memory"], limits["cpu"]
+// formatMemCPU renders a container's resource quantities as "mem/cpu", e.g.
+// "1Gi/500m"; used for both requests and limits. Kubernetes quantities are
+// printed as declared.
+func formatMemCPU(quantities map[string]string) string {
+	memory, cpu := quantities["memory"], quantities["cpu"]
 	switch {
 	case memory != "" && cpu != "":
 		return memory + "/" + cpu

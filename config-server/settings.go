@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"go.containerssh.io/containerssh/config"
@@ -15,7 +16,8 @@ const (
 	settingsTemplateName = "settings"
 	settingsOwnerEnv     = "DEV_BOX_AUTHENTICATED_OWNER"
 	settingsTemplatesEnv = "DEV_BOX_BOX_TEMPLATES"
-	settingsExecutable    = "/usr/local/bin/dev-box-settings"
+	settingsMaxBoxesEnv  = "DEV_BOX_MAX_BOXES"
+	settingsExecutable   = "/usr/local/bin/dev-box-settings"
 )
 
 // settingsConfig is the reserved application, not a user-editable template.
@@ -79,6 +81,11 @@ func (h *configHandler) settingsConfig(req config.Request) (config.AppConfig, er
 					Env: []corev1.EnvVar{
 						{Name: settingsOwnerEnv, Value: owner},
 						{Name: settingsTemplatesEnv, Value: strings.Join(templates, ",")},
+						// The advisory cap of the UI's created N/max line; 0 hides
+						// the element exactly when no cap is enforced. The UI counts
+						// only the listed templates' boxes; the webhook's list-based
+						// check stays authoritative.
+						{Name: settingsMaxBoxesEnv, Value: strconv.Itoa(h.boxes.maxPods)},
 					},
 					SecurityContext: &corev1.SecurityContext{
 						AllowPrivilegeEscalation: ptr.To(false), ReadOnlyRootFilesystem: ptr.To(true),

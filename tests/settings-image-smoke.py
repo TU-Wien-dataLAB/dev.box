@@ -149,7 +149,7 @@ def pod(handler, doc):
             "containers": [{
                 "name": "shell",
                 "image": doc.get("image", "containerssh/containerssh-guest-image"),
-                "resources": {"limits": doc.get("limits", {})},
+                "resources": {"requests": doc.get("requests", {}), "limits": doc.get("limits", {})},
             }],
         },
         "status": {
@@ -330,6 +330,7 @@ def main():
                 "@pods@", json.dumps({ubuntu: {"name": ubuntu, "phase": "Running", "startedAgo": 7200,
                                                "restarts": 1, "runtimeClass": "kata-qemu-runtime-rs",
                                                "image": "containerssh/containerssh-guest-image",
+                                               "requests": {"cpu": "250m", "memory": "512Mi"},
                                                "limits": {"cpu": "500m", "memory": "1Gi"}}})))
         os.chmod(fake_api_path, 0o600)
         try:
@@ -345,6 +346,7 @@ def main():
             def api_env(templates="ubuntu,data-engine", token="smoke-token"):
                 env = ["-e", "NO_COLOR=1",
                        "-e", f"{TEMPLATES_ENV}={templates}",
+                       "-e", "DEV_BOX_MAX_BOXES=2",
                        "-e", "DEV_BOX_KUBE_API_URL=http://fake:8080",
                        "-e", "DEV_BOX_NAMESPACE=containerssh-sessions"]
                 if token is not None:
@@ -369,26 +371,34 @@ def main():
                 with urllib.request.urlopen(f"{base}/_admin/gets", timeout=TIMEOUT) as response:
                     return int(response.read())
 
-            # The management flow: rows from gets, selection via the dialog,
-            # confirm/cancel, refresh, Terminating, not-created, quit.
+            # The management flow: master rows from gets, selection via the
+            # detail pane, confirm/cancel, refresh, Terminating, not-created,
+            # the box-cap line, quit.
             base, command, cols = api_run()
             with Terminal(command, cols=cols) as terminal:
+                # The sorted master list starts at data-engine (not created);
+                # its detail pane names the create command, and the master
+                # pane foots the box cap.
                 terminal.expect(
-                    "Owner: alice.example", "Connection:", "Live",
-                    "ubuntu", "Running", "up 2h",
-                    "containerssh/containerssh-guest-image", "kata-qemu-runtime-rs",
-                    "restarts 1", "1Gi/500m",
-                    "data-engine", f"not created · ssh data-engine@<host>",
+                    "Owner: alice.example", "Live",
+                    "data-engine", "not created",
+                    "ubuntu", "Running",
+                    "ssh data-engine@<host> creates this box",
+                    "created 1/2",
                 )
                 # Selection and cancel: the initially selected data-engine is
                 # not created, so d explains instead of deleting.
                 terminal.send(b"d")
                 terminal.expect("data-engine is not created")
-                terminal.send(b"j")   # select ubuntu
+                terminal.send(b"j")   # select ubuntu: strip + ledger detail
+                terminal.expect("up 2h", "RESTARTS",
+                                "containerssh/containerssh-guest-image", "kata-qemu-runtime-rs",
+                                "REQUESTS", "512Mi/250m", "LIMITS", "1Gi/500m")
                 terminal.send(b"d")
                 terminal.expect("Delete box \"ubuntu\"", "all data on the box's local disk is destroyed",
                                 "active sessions in the box are killed",
-                                "a fresh box is created on your next login: ssh ubuntu@<host>")
+                                "a fresh box is created on your next login:",
+                                "ssh ubuntu@<host>")
                 terminal.send(b"n")
                 terminal.stays_running()
                 # Manual refresh issues new gets.
@@ -405,16 +415,19 @@ def main():
                 terminal.expect("Terminating")
                 api_admin(base, "gone", name=ubuntu)
                 terminal.output.clear()
-                terminal.expect(f"not created · ssh ubuntu@<host>")
+                # The differential renderer may repaint only changed cells, so
+                # assert the redrawn count, not the contiguous "created 0/2".
+                terminal.expect("ssh ubuntu@<host> creates this box", "0/2")
                 terminal.send(b"q")
                 terminal.exit()
-            print("PASS: management rows, selection, confirm/cancel, refresh, Terminating, recreate hint")
+            print("PASS: management master/detail, selection, confirm/cancel, refresh, Terminating, recreate hint, box cap")
 
             def seed_ubuntu(base):
                 api_admin(base, "add", name=ubuntu, doc={
                     "name": ubuntu, "phase": "Running", "startedAgo": 7200, "restarts": 1,
                     "runtimeClass": "kata-qemu-runtime-rs",
                     "image": "containerssh/containerssh-guest-image",
+                    "requests": {"cpu": "250m", "memory": "512Mi"},
                     "limits": {"cpu": "500m", "memory": "1Gi"}})
 
             # Dumb terminal: plain text, no SGR colors, still fully usable.
@@ -434,7 +447,7 @@ def main():
             for token in (None, "wrong-token"):
                 base, command, cols = api_run(token=token)
                 with Terminal(command, cols=cols) as terminal:
-                    terminal.expect("Connection:", "Unreachable", "unreachable", "q: quit")
+                    terminal.expect("Unreachable", "unreachable", "q: quit")
                     terminal.send(b"d")
                     terminal.expect("delete is unavailable")
                     terminal.send(b"q")
@@ -445,7 +458,7 @@ def main():
 
         # No API at all (network none): the UI stays up and honest.
         with Terminal(run_args(extra=["-e", f"{TEMPLATES_ENV}=ubuntu", "-e", "NO_COLOR=1"]) + ["-it", args.image]) as terminal:
-            terminal.expect("Connection:", "Unreachable", "unreachable", "q: quit")
+            terminal.expect("Unreachable", "unreachable", "q: quit")
             terminal.send(b"d")
             terminal.expect("delete is unavailable")
             terminal.send(b"q")
