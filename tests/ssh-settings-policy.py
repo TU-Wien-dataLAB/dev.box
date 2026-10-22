@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Bounded, opt-in SSH acceptance probe for issue #9 (never deploys anything).
 
-Requires Paramiko 3.5.1; see tests/settings-acceptance.md. Every invocation with
+Requires Paramiko 3.5.1; see tests/README.md. Every invocation with
 connection arguments makes real SSH connections and may create backend pods.
 """
 import argparse
@@ -78,7 +78,7 @@ def main():
             cMSG_GLOBAL_REQUEST, cMSG_CHANNEL_OPEN,
         )
     except ImportError:
-        raise Failure("install paramiko==3.5.1 in an optional venv; see tests/settings-acceptance.md")
+        raise Failure("install paramiko==3.5.1 in an optional venv; see tests/README.md")
     require(paramiko.__version__ == "3.5.1", "private packet seam validated locally only with paramiko==3.5.1")
     deadline = time.monotonic() + a.max_total_seconds
 
@@ -478,7 +478,7 @@ def main():
     else:
         print("NOT RUN: pod UID/image/lifecycle observations (no kubectl options)")
     signal.setitimer(signal.ITIMER_REAL, 0)
-    print("Completed selected SSH probes only; remaining issue #9 gates are in tests/settings-acceptance.md")
+    print("Completed selected SSH probes only; remaining live acceptance gates are in docs/operations.md")
 
 
 if __name__ == "__main__":

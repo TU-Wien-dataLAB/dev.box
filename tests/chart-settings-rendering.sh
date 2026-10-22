@@ -31,7 +31,11 @@ ruby -ryaml -rjson -e '
   abort "settings must not be rendered as a template file" unless templates.keys == ["ubuntu.yaml"]
   server = docs.find { |d| d["kind"] == "Deployment" && d.dig("metadata", "name").end_with?("-config-server") }
   env = server.dig("spec", "template", "spec", "containers", 0, "env").to_h { |e| [e.fetch("name"), e["value"]] }
-  abort "wrong settings image default" unless env["CONTAINERSSH_SETTINGS_IMAGE"] == "ghcr.io/tu-wien-datalab/dev.box/settings-tui:sha-4802c39db9b28f20c6309e0078066e309950f6ab@sha256:18efc8cb71a403c06de27dbad6b071ef3935681aa40d3e0dab2ab7bc03355fd4"
+  settings_image = YAML.load_file(ARGV[1]).fetch("settings").fetch("image")
+  abort "settings default must be digest-pinned" unless settings_image.fetch("tag").match?(/(?:@|\A)sha256:[0-9a-f]{64}\z/)
+  separator = settings_image.fetch("tag").start_with?("sha256:") ? "@" : ":"
+  expected_image = settings_image.fetch("repository") + separator + settings_image.fetch("tag")
+  abort "wrong settings image default" unless env["CONTAINERSSH_SETTINGS_IMAGE"] == expected_image
   abort "template directory not authoritative" unless env["CONTAINERSSH_CONFIG_DIR"] == "/config" && !env.keys.any? { |key| key.include?("TEMPLATE") }
   abort "template directory is not mounted" unless server.dig("spec", "template", "spec", "volumes").any? { |v| v.dig("configMap", "name") == "settings-containerssh-templates" }
   ubuntu = YAML.load(templates.fetch("ubuntu.yaml"))
@@ -52,7 +56,7 @@ ruby -ryaml -rjson -e '
   auth = docs.find { |d| d["kind"] == "Deployment" && d.dig("metadata", "name").end_with?("-auth-server") }
   policy = auth.dig("spec", "template", "spec", "containers", 0, "env").find { |e| e["name"] == "AUTH_SERVER_ALLOWED_TEMPLATES" }
   abort "settings bypasses exact-name authz gate" unless JSON.parse(policy.fetch("value")) == ["ubuntu", "settings"]
-' "$tmp/rendered.yaml"
+' "$tmp/rendered.yaml" "$root/charts/containerssh/values.yaml"
 printf 'OK   code-owned settings image/directory wiring and ordinary security defaults\n'
 
 # Nil/false/empty partial overrides cannot clear inherited base fields. Reject

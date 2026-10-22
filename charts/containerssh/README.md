@@ -533,11 +533,9 @@ policy above. The default peer targets a kubeadm-style control plane (kube-syste
 differently. Mounted credentials and `kubectl auth can-i` impersonation checks prove different
 seams than a real settings-pod API call; the live request is approval-gated.
 
-For the one-time values migration, secure export, approval gates, and staged RBAC/token/SSH
-acceptance, follow [How to migrate settings to code](../../tests/settings-code-migration.md);
-for the management UI rollout, follow
-[the management acceptance plan](../../tests/settings-management-migration.md).
-Historical POC reports are not evidence for these new runtime/token/RBAC contracts.
+For secure values export, approval gates, storage activation safety, and staged
+RBAC/token/SSH acceptance, follow [operations](../../docs/operations.md).
+Runnable checks and their prerequisites are listed in [tests](../../tests/README.md).
 
 ## Bundled authentik auth server (`authServer.enabled`)
 

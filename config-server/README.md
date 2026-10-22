@@ -137,8 +137,8 @@ Data in retained PVC mounts survives pod deletion/recreation; container writable
 `emptyDir` do not. PVC deletion is the intended operator data-destruction path (the verified Cinder
 class has reclaim policy `Delete`). Namespace deletion, storage failure and users deleting files
 can also lose data. Backups/snapshots and automatic GC are out of scope. The
-[implementation plan and staged live gates](../tests/durable-storage-plan.md) distinguish the
-compatibility spike from managed provisioning and SSH/UI acceptance.
+[operations guide](../docs/operations.md) covers storage activation safety and staged
+SSH/UI acceptance.
 
 ## Reserved settings application
 
@@ -172,11 +172,10 @@ injects Kata per ordinary named template, not into the shared base or settings. 
 configs need the same audit. Heavy fields remain available in ordinary templates.
 
 **Stock v0.6 is insufficient for the full SSH policy.** Fork
-[PR #11](https://github.com/TU-Wien-dataLAB/ContainerSSH/pull/11) merged `settings-change` → `deploy`
-on 2026-10-16; [deploy Docker Image run 38917607974](https://github.com/TU-Wien-dataLAB/ContainerSSH/actions/runs/38917607974)
-succeeded. The chart defaults to `ghcr.io/tu-wien-datalab/containerssh:deploy`; a moving code default
-is not a live rollout. Preserve the existing gateway digest pin when migrating. The local
-[patch build](../containerssh-settings/README.md) is historical POC tooling, not the default image.
+[PR #11](https://github.com/TU-Wien-dataLAB/ContainerSSH/pull/11) provides the Settings fixes.
+The chart pins a fork image that also includes PR #10's auth denial banners; stock v0.6
+rejects the auth `message` field. Preserve the tested gateway digest when upgrading.
+Gateway builds and fixes belong in the fork, not this repository.
 
 ### Per-owner Kubernetes authorization
 
@@ -222,7 +221,7 @@ allowing settings pods (`dev.box/application=settings`) to reach the Kubernetes 
 keep deny-ingress/egress-internet-only. Operator-side impersonation proves API authorization
 independently of networking: mounted-token evidence and a live settings-pod API request are distinct
 seams, and both are approval-gated. Follow
-[the management acceptance plan](../tests/settings-management-migration.md).
+[the operations guide](../docs/operations.md).
 
 ## Build and test locally
 

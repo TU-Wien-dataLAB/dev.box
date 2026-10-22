@@ -107,4 +107,4 @@ The image does **not** enforce SSH request policy or establish that environment
 variables arrive only from trusted plumbing; the ContainerSSH security config owns that
 (the chart's `configserver` values and the config server's synthesis). Live acceptance of the
 management actions is approval-gated; see
-[the management acceptance plan](../tests/settings-management-migration.md).
+[operations](../docs/operations.md).

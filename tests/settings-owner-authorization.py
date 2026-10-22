@@ -2,7 +2,7 @@
 """Read-only, opt-in Kubernetes authorization acceptance for settings credentials.
 
 Requires an explicit context and impersonation permission. Never requests a token,
-executes in a pod, changes RBAC, or deletes a pod. See settings-code-migration.md.
+executes in a pod, changes RBAC, or deletes a pod. See docs/operations.md.
 """
 import argparse
 import subprocess

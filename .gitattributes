@@ -1,2 +1,0 @@
-# Unified-diff context has an intentional space before Go tabs/blank lines.
-containerssh-settings/*.patch -whitespace
