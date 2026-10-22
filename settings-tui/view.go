@@ -27,6 +27,8 @@ import (
 
 const sshHostPlaceholder = "<host>"
 
+const deleteDataWarning = "Local disk data is destroyed; data on retained PVCs is kept."
+
 // Layout metrics of the master–detail layout.
 const (
 	// stateWidth is the widest state word ("Terminating", "not created",
@@ -450,7 +452,7 @@ func (m settingsModel) deletePopup(style styler, budget int) ([]string, bool) {
 	row := m.rows[clamp(m.selected, len(m.rows))]
 	content := []string{
 		style.bold(`Delete box "` + sanitize(row.template) + `" (` + row.name + `)?`),
-		style.dim("· all data on the box's local disk is destroyed"),
+		style.dim("· " + deleteDataWarning),
 		style.dim("· active sessions in the box are killed"),
 		style.dim("· a fresh box is created on your next login:"),
 		style.dim("  ssh " + sanitize(row.template) + "@" + sshHostPlaceholder),
@@ -685,7 +687,7 @@ func (m settingsModel) dialogLines(style styler, budget int) []string {
 	if budget >= 5 {
 		return []string{
 			style.bold("Delete box \"" + row.template + "\" (" + row.name + ")?"),
-			style.dim("· all data on the box's local disk is destroyed"),
+			style.dim("· " + deleteDataWarning),
 			style.dim("· active sessions in the box are killed"),
 			style.dim("· a fresh box is created on your next login: ssh " + row.template + "@" + sshHostPlaceholder),
 			yes + " · " + cancel,
@@ -695,20 +697,22 @@ func (m settingsModel) dialogLines(style styler, budget int) []string {
 	if budget >= 3 {
 		return []string{
 			prompt,
-			style.dim("· destroys its local disk · kills its sessions · recreated on next login"),
+			style.dim(deleteDataWarning + " · kills its sessions · recreated on next login"),
 			yes + " · " + cancel,
 		}
 	}
 	if budget == 2 {
-		return []string{prompt, yes + " · " + cancel}
+		return []string{style.dim(deleteDataWarning), prompt + " " + yes + " · " + cancel}
 	}
-	return []string{prompt}
+	// Use the short template-only prompt so the retention warning still fits
+	// at 80 columns; the full deterministic name consumes the warning's budget.
+	return []string{m.dialogCompact(style)}
 }
 
 // dialogCompact is the two-line-terminal dialog.
 func (m settingsModel) dialogCompact(style styler) string {
 	row := m.rows[clamp(m.selected, len(m.rows))]
-	return style.bold("Delete "+row.template+"?") + " " + style.red("y delete") + " · " + style.dim("n/Esc cancel")
+	return style.bold("Delete "+row.template+"?") + " " + style.dim(deleteDataWarning) + " " + style.red("y delete") + " · " + style.dim("n/Esc cancel")
 }
 
 // footer renders the key hints; identity=true (master–detail layout) also

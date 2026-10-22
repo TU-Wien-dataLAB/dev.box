@@ -152,6 +152,59 @@ validate_config settings-external-effective "$tmp/settings-external-effective.ya
 merge_pod_override "$tmp/settings-base.yaml" "$tmp/ordinary-override.yaml" "$tmp/ordinary-mixed-effective.yaml"
 validate_config ordinary-mixed-effective "$tmp/ordinary-mixed-effective.yaml"
 
+# Managed storage: rendered envelope -> real config webhook -> actual merger ->
+# gateway parser. Claims are created against the offline Kubernetes fake only.
+cat >"$tmp/storage-values.yaml" <<'YAML'
+configServer:
+  enabled: true
+kubernetes:
+  podTemplates:
+    - name: ubuntu
+      volumeClaimTemplates:
+        - metadata: {name: home}
+          spec:
+            accessModes: [ReadWriteOnce]
+            resources: {requests: {storage: 25Gi}}
+      spec:
+        securityContext: {fsGroup: 1000}
+        volumes:
+          - name: home
+            persistentVolumeClaim: {claimName: home}
+        containers:
+          - name: shell
+            image: containerssh/containerssh-guest-image
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities: {drop: [ALL]}
+            resources: {limits: {memory: 128Mi, cpu: 500m}}
+            volumeMounts: [{name: home, mountPath: /home}]
+            env: [{name: HOME, value: /home}]
+YAML
+helm template binary-storage "$chart" --namespace containerssh \
+  --set auth.publicKey.webhook.url=https://auth.example.test \
+  -f "$tmp/storage-values.yaml" >"$tmp/storage-rendered.yaml"
+ruby -ryaml -e '
+  docs = YAML.load_stream(File.read(ARGV[0])).compact
+  templates = docs.find { |d| d["kind"] == "ConfigMap" && d.dig("metadata", "name").end_with?("-templates") }
+  File.write(ARGV[1], templates.fetch("data").fetch("ubuntu.yaml"))
+' "$tmp/storage-rendered.yaml" "$tmp/storage-template.yaml"
+(cd "$repo_root/config-server" && \
+  CONTAINERSSH_TEST_STORAGE_TEMPLATE="$tmp/storage-template.yaml" \
+  CONTAINERSSH_TEST_STORAGE_RESPONSE="$tmp/storage-override.yaml" \
+  go test -count=1 -run '^TestStorageWebhookResponse$' .)
+merge_pod_override "$tmp/settings-base.yaml" "$tmp/storage-override.yaml" "$tmp/storage-effective.yaml"
+validate_config storage-effective "$tmp/storage-effective.yaml"
+ruby -ryaml -e '
+  pod = YAML.load_file(ARGV[0]).dig("kubernetes", "pod")
+  c = pod.dig("spec", "containers", 0)
+  abort "authored guest image lost" unless c["image"] == "containerssh/containerssh-guest-image"
+  abort "authored HOME lost" unless c["env"].any? { |e| e["name"] == "HOME" && e["value"] == "/home" }
+  abort "authored mount lost" unless c["volumeMounts"].any? { |m| m["name"] == "home" && m["mountPath"] == "/home" }
+  abort "authored fsGroup lost" unless pod.dig("spec", "securityContext", "fsGroup") == 1000
+  abort "symbolic claim leaked" unless pod.dig("spec", "volumes", 0, "persistentVolumeClaim", "claimName") == "box-ec061c6832-home"
+' "$tmp/dump-storage-effective.json"
+printf 'OK   managed storage preserves the authored guest image, native mount, HOME and fsGroup through the real merger\n'
+
 # Regression: a true base createMissingPods cannot be cleared by a false/empty
 # webhook field. Prove the real merger retains it and backend validation fails.
 ruby -ryaml -e '

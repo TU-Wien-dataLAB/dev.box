@@ -29,7 +29,8 @@ ssh ubuntu@host → ContainerSSH ───────────────�
   fallback. `default` is an ordinary template name, used only by `ssh default@host`.
   Empty or unsafe usernames are rejected, not rewritten into another template name. `settings`
   bypasses file lookup and always selects the code-owned application; a file cannot override it.
-- Files are **partial** `AppConfig`s (a `kubernetes.pod` override) — fields you leave out are
+- Files contain **partial** `AppConfig`s (a `kubernetes.pod` override), optionally wrapped with
+  top-level `volumeClaimTemplates` consumed only by this server — fields you leave out are
   inherited from ContainerSSH's base config (the chart's `config.yaml`). ContainerSSH merges with
   `mergo.WithOverride`, so unset/empty fields never clobber the base. The injected persistent pod
   name/label ride the same merge path, so the strict-YAML duplicate-key pitfall in rendered
@@ -70,6 +71,74 @@ With `CONTAINERSSH_OPERATING_MODE=persistent` (the bundled chart renders it from
   merge cannot replace a true boolean with false, so request-scoping it keeps the always-available
   connection-mode settings response valid as well as ordinary mixed-mode templates. External
   gateway configurations must omit the base flag too.
+
+## Managed retained claims (template reference)
+
+Storage is per-template opt-in, off unless `volumeClaimTemplates` is present. The envelope is
+StatefulSet-style vocabulary owned by config-server, **not** a PodSpec or ContainerSSH field.
+Only the ordinary `AppConfig` is returned over the webhook. Both the server operating mode and
+an explicit template mode must be persistent; mounted connection/session/invalid overrides deny.
+
+Standalone mounted template example (the chart accepts the equivalent fields under each
+`kubernetes.podTemplates` item; see [chart authoring](../charts/containerssh/README.md)):
+
+```yaml
+volumeClaimTemplates:
+  - metadata: {name: home}
+    spec:
+      accessModes: [ReadWriteOnce]
+      resources: {requests: {storage: 25Gi}}
+kubernetes:
+  pod:
+    spec:
+      securityContext: {fsGroup: 1000}
+      volumes:
+        - name: home
+          persistentVolumeClaim: {claimName: home}
+      containers:
+        - name: shell
+          image: containerssh/containerssh-guest-image
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          resources: {limits: {memory: 128Mi, cpu: 500m}}
+          volumeMounts: [{name: home, mountPath: /home}]
+          env: [{name: HOME, value: /home}]
+```
+
+Claim names must be unique DNS-1123 labels and requests must specify a positive storage quantity.
+PVC specs use native Kubernetes fields; storage class selection follows Kubernetes defaults when
+omitted. Matching symbolic `claimName` values become `<box-name>-<claim-name>`, per authenticated
+owner + resolved template + claim. Unmatched references pass through as operator-managed PVCs.
+Mount paths, HOME and fsGroup have **no injected defaults**: absent fsGroup, a fresh volume may be
+root-owned and unwritable for UID 1000. Duplicate volume names or mount paths are left to Kubernetes
+pod validation. A nonempty `containers` slice replaces the base slice, rather than merging
+individual containers: image, container security settings and resource limits must be restated.
+The real-merger gate caught and corrects the issue comment's element-wise-merge assumption.
+
+Identity and the live-box cap are checked before any claim API access. Claims are independently
+created with no owner references; errors (including quota exhaustion) deny the connection without
+rolling back earlier claims. Retry reuses verified claims. Both labels and exact identity
+annotations use `dev.box/owner`, `dev.box/template`, `dev.box/claim`; owner/template label values
+use the same valid-label encoding as pods, while annotations preserve exact canonical strings.
+Existing claims, including create races returning AlreadyExists, must match all identity metadata
+and have no deletion timestamp or owner references. A matching short name alone is insufficient.
+The cached PodSpec is deep-copied before request-specific reference rewriting.
+
+Only PVC `get/create` in the session namespace are required in addition to the existing server
+permissions. Settings receives **no PVC permissions**, no storage-detection state and no storage
+management actions. Claim specs are never reconciled or resized; existing pods are never changed.
+Retained/orphan claims do not count toward the live-box cap. The chart's conditional namespace
+ResourceQuota is the aggregate storage ceiling, not a per-owner limit; template count is not a
+lifetime claim ceiling. Renamed/removed templates and claims leave retained orphans for explicit
+operator cleanup by labels. Expansion is a manual operator patch when the StorageClass allows it.
+
+Data in retained PVC mounts survives pod deletion/recreation; container writable layers and
+`emptyDir` do not. PVC deletion is the intended operator data-destruction path (the verified Cinder
+class has reclaim policy `Delete`). Namespace deletion, storage failure and users deleting files
+can also lose data. Backups/snapshots and automatic GC are out of scope. The
+[implementation plan and staged live gates](../tests/durable-storage-plan.md) distinguish the
+compatibility spike from managed provisioning and SSH/UI acceptance.
 
 ## Reserved settings application
 
@@ -196,7 +265,7 @@ approved and isolated; never label synthetic owners as real authenticated-owner 
 | `CONTAINERSSH_LISTEN` | `0.0.0.0:8080` | Listen address |
 | `CONTAINERSSH_LOG_LEVEL` | `6` | Syslog-style: `7` debug, `6` info, `5` notice, `4` warning, `3` error, `2` crit |
 | `CONTAINERSSH_OPERATING_MODE` | `connection` | `connection`, `session` or `persistent`. Only `persistent` enables name/label injection + the cap (see above) |
-| `CONTAINERSSH_SESSION_NAMESPACE` | `containerssh-sessions` | Namespace of backend pods and per-owner authorization objects |
+| `CONTAINERSSH_SESSION_NAMESPACE` | `containerssh-sessions` | Namespace of backend pods, managed PVCs and per-owner authorization objects |
 | `CONTAINERSSH_SETTINGS_IMAGE` | required | Full settings guest image reference; startup fails if absent, in every mode; pin immutably for rollout |
 | `CONTAINERSSH_MAX_PODS_PER_USER` | `3` | Per-owner live-box cap; `0` disables the cap. Only enforced in persistent mode |
 | `CONTAINERSSH_TLS_CERT` | — | Server certificate (file path or PEM) → enables HTTPS |

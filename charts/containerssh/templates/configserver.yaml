@@ -29,6 +29,10 @@ data:
     security:
 {{ toYaml . | indent 6 }}
     {{- end }}
+    {{- with $tpl.volumeClaimTemplates }}
+    volumeClaimTemplates:
+{{ toYaml . | indent 6 }}
+    {{- end }}
     kubernetes:
       pod:
     {{- with $tpl.mode }}
@@ -69,6 +73,11 @@ metadata:
     {{- include "containerssh.labels" . | nindent 4 }}
     app.kubernetes.io/component: config-server
 rules:
+  {{- if include "containerssh.managedStorage" . }}
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "create"]
+  {{- end }}
   - apiGroups: [""]
     resources: ["pods"]
     # List for the cap; get/delete can be delegated to name-scoped owner Roles.

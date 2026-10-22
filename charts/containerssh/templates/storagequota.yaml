@@ -1,0 +1,13 @@
+{{- if and (include "containerssh.managedStorage" .) .Values.storageQuota.enabled }}
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ include "containerssh.fullname" . }}-storage
+  namespace: {{ .Values.kubernetes.sessionNamespace }}
+  labels:
+    {{- include "containerssh.labels" . | nindent 4 }}
+spec:
+  hard:
+    requests.storage: {{ .Values.storageQuota.requestsStorage | quote }}
+    persistentvolumeclaims: {{ .Values.storageQuota.persistentVolumeClaims | quote }}
+{{- end }}

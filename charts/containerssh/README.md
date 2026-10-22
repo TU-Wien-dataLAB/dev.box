@@ -108,6 +108,100 @@ clients cannot bypass them.
   changes restart ContainerSSH and load the new mode/settings. If `existingConfigMap` is used, Helm
   cannot checksum that external object; restart the Deployment after changing it.
 
+## Author a template with retained storage
+
+1. Enable `configServer.enabled` and keep `kubernetes.mode: persistent`. Use a
+   config-server image implementing the managed-claim template envelope. Every template declaring
+   claims must also have effective mode `persistent`; connection/session overrides are rejected.
+2. Declare native PVC templates and explicit mounts in an ordinary template, for example:
+
+   ```yaml
+   kubernetes:
+     podTemplates:
+       - name: ubuntu
+         volumeClaimTemplates:
+           - metadata: {name: home}
+             spec:
+               accessModes: [ReadWriteOnce]
+               # Set storageClassName if the cluster default is unsuitable.
+               resources: {requests: {storage: 25Gi}}
+         spec:
+           securityContext: {fsGroup: 1000}
+           volumes:
+             - name: home
+               persistentVolumeClaim: {claimName: home}
+           containers:
+             - name: shell
+               image: containerssh/containerssh-guest-image
+               securityContext:
+                 allowPrivilegeEscalation: false
+                 capabilities: {drop: [ALL]}
+               resources: {limits: {memory: 128Mi, cpu: 500m}}
+               volumeMounts: [{name: home, mountPath: /home}]
+               env: [{name: HOME, value: /home}]
+   ```
+
+   Each claim needs an explicit positive storage request and a unique DNS-1123 label name
+   (at most 63 characters) within its template. Specify `fsGroup` for the non-root guest to
+   write the filesystem; without it the volume may be root-owned and unwritable. Set both
+   `mountPath` and `HOME` deliberately: neither has a storage default and neither is injected.
+   Keep these fields in the ordinary template, not the shared base. A nonempty `containers`
+   slice replaces the base slice: restate the image, container security settings and resource
+   bounds, as above. Container entries do **not** merge element-by-element. Duplicate volume names or
+   mount paths are Kubernetes pod-validation errors; the chart does not resolve collisions.
+3. Review the namespace-wide [storage quota](#managed-storage-reference) before installing.
+   Render with `helm template` and run `bash tests/chart-storage-rendering.sh` from the repo root.
+   To apply new mounts to an existing box, deliberately recreate/migrate its pod; template changes
+   never update a running pod.
+
+## Managed storage reference
+
+| Value | Default | Meaning |
+| --- | --- | --- |
+| `kubernetes.podTemplates[].volumeClaimTemplates` | absent | Native PVC declarations, per-template opt-in; explicit positive `spec.resources.requests.storage` required |
+| `storageQuota.enabled` | `true` | Render a session-namespace ResourceQuota only when at least one nonempty managed declaration exists |
+| `storageQuota.requestsStorage` | `500Gi` | Aggregate namespace `requests.storage` ceiling |
+| `storageQuota.persistentVolumeClaims` | `50` | Aggregate namespace PVC count ceiling |
+
+Mounted template YAML emits `volumeClaimTemplates` at the **top level**, alongside `security`
+and `kubernetes`, never inside PodSpec. The config server consumes that envelope and returns only
+ContainerSSH configuration fields. Helm does not precreate claims. Code-owned `settings` cannot
+have claim declarations. Config-server alone gains namespaced PVC `get/create`, only when managed
+claims are configured; gateway and settings gain no PVC permissions, and no PVC list/delete is
+added. Disabling quota does not disable those required permissions. Storage-unused installs gain
+neither quota nor PVC permissions. Operator-managed shared PVC references without a matching
+claim-template name pass through unchanged and do not activate managed storage/quota.
+
+### Retention and failure semantics
+
+- A symbolic `persistentVolumeClaim.claimName` matching a declaration becomes
+  `box-<10hex>-<claimName>`: one PVC per **authenticated owner, template, claim**. The box hash is
+  the existing SHA-256 prefix over trimmed owner + NUL + template. Claims carry owner/template/claim
+  identity metadata; owner/template labels support operator queries and cleanup without name parsing.
+- The config server enforces the live-box cap **before** creating claims. It creates missing claims
+  on demand and verifies identity metadata on reuse, including after `409 AlreadyExists`.
+  Foreign or terminating claims and real API errors deny the connection. Name equality alone is
+  insufficient. Cached pod specs are copied before per-owner reference rewrites.
+- Managed claims have **no pod owner references**. Settings still has exactly one action: delete
+  the pod. **Local disk data is destroyed; data on retained PVCs is kept.** Disconnect preserves
+  persistent pods; pod deletion/eviction/recreation loses writable-layer and ephemeral-volume data
+  (including `emptyDir`), but retained mounts survive. Only files written to those mounts are durable.
+- Quota is namespace-wide, not a per-owner fairness guarantee. Retained claims, including orphans,
+  count against it; current template count is not a lifetime PVC ceiling. Quota exhaustion fails
+  claim creation and denies the connection. Partial multi-claim failures can leave retained claims:
+  there is no rollback deletion; retries reuse verified claims.
+- Owner identity drift, template/claim renames, storage removal or template deletion can orphan
+  claims. Cleanup is explicit operator work by label, never automatic GC. Helm uninstall does not
+  delete these independently created claims; namespace deletion can destroy them.
+- Template edits do not reconcile existing PVC specs or update existing pods. Expansion is a manual
+  operator PVC patch, requiring a StorageClass with `allowVolumeExpansion: true`. Deliberately
+  recreate/migrate pods when applying pod-spec changes.
+- `kubectl delete pvc` is the intended operator data-destruction path; backing-volume destruction
+  follows the reclaim policy (recorded Cinder policy: `Delete`). Namespace deletion, storage failure
+  and users deleting files can also lose data. Backups/snapshots are out of scope; retention is not
+  a backup. CSI binding/provisioning still follows the selected StorageClass: with
+  `WaitForFirstConsumer`, provisioning waits for a consuming pod to schedule.
+
 ## Install
 
 The chart default is **persistent mode**, which needs a config server (bundled or external) to

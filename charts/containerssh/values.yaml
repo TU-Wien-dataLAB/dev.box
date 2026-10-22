@@ -207,7 +207,16 @@ kubernetes:
   # "default" is an ordinary name, used only by `ssh default@host`. Each item is a partial
   # kubernetes.pod override (mode/shellCommand/metadata/spec); an optional
   # `security` block overrides the connection security policy (not pod securityContext).
-  # Everything left out is inherited from `pod` above / the base config.
+  # Optional volumeClaimTemplates is a config-server-owned TOP-LEVEL template
+  # envelope field (not PodSpec). Native PVC declarations need unique DNS-label
+  # metadata.name and explicit positive spec.resources.requests.storage.
+  # Requires configServer.enabled plus persistent base/effective template mode.
+  # spec.volumes[].persistentVolumeClaim.claimName matching a declaration is symbolic;
+  # unmatched names remain operator-managed references. Author fsGroup, mountPath,
+  # and HOME explicitly in spec: none are injected. Claims survive pod deletion;
+  # template edits do not resize/reconcile them. See README retained-storage guide.
+  # Empty fields inherit from the base, but nonempty containers replaces the ENTIRE
+  # base slice: restate image, securityContext and resources in such templates.
   # Do not add settings here: the name is reserved and rejected. Only its image
   # is configurable under settings.image; its policy/spec live in config-server.
   podTemplates:
@@ -224,6 +233,13 @@ kubernetes:
     # is enabled, unless spec.runtimeClassName is explicitly set (even to "").
     # Heavy fields such as volumes, serviceAccountName, nodeName, or fsGroup belong
     # in a template spec, never in the shared base.
+
+# Namespace-wide aggregate guard, rendered only with nonempty managed
+# volumeClaimTemplates. Not a per-owner cap; retained orphans count too.
+storageQuota:
+  enabled: true
+  requestsStorage: 500Gi
+  persistentVolumeClaims: 50
 
 ssh:
   # SSH listener port inside the container/pod

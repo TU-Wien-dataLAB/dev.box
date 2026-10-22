@@ -30,6 +30,33 @@ PodSpec field must live in an ordinary template, never the shared base.
 {{- fail "unsafe shared base kubernetes.pod.metadata.labels.dev.box/owner: owner identity is injected by the config server" }}
 {{- end }}
 {{- range .Values.kubernetes.podTemplates }}
+{{- if .volumeClaimTemplates }}
+{{- if not $.Values.configServer.enabled }}
+{{- fail "managed storage requires configServer.enabled=true" }}
+{{- end }}
+{{- if or (ne $.Values.kubernetes.mode "persistent") (ne (default $.Values.kubernetes.mode .mode) "persistent") }}
+{{- fail "managed storage requires persistent base and effective template mode" }}
+{{- end }}
+{{- $names := dict }}
+{{- range .volumeClaimTemplates }}
+{{- $name := default "" (default dict .metadata).name }}
+{{- if or (gt (len $name) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $name)) }}
+{{- fail "managed storage requires a valid claim name (DNS-1123 label, at most 63 characters)" }}
+{{- end }}
+{{- if hasKey $names $name }}
+{{- fail (printf "duplicate claim name %q in volumeClaimTemplates" $name) }}
+{{- end }}
+{{- $_ := set $names $name true }}
+{{- $resources := default dict (default dict .spec).resources }}
+{{- $storage := toString (default "" (default dict $resources.requests).storage) }}
+{{- /* Kubernetes quantity syntax, plus a nonzero mantissa (without float rounding). */}}
+{{- $quantity := "^([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+|[numkMGTPE]|[KMGTPE]i)?$" }}
+{{- $mantissa := regexFind "^[0-9.]+" $storage }}
+{{- if or (not (regexMatch $quantity $storage)) (not (regexMatch "[1-9]" $mantissa)) }}
+{{- fail (printf "claim %q requires an explicit positive storage request" $name) }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- if eq (default "" .name) "settings" }}
 {{- fail "settings is reserved: remove it from kubernetes.podTemplates and configure settings.image.repository/tag instead" }}
 {{- end }}

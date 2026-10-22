@@ -410,7 +410,7 @@ def main():
                                 "containerssh/containerssh-guest-image", "kata-qemu-runtime-rs",
                                 "REQUESTS", "512Mi/250m", "LIMITS", "1Gi/500m")
                 terminal.send(b"d")
-                terminal.expect("Delete box \"ubuntu\"", "all data on the box's local disk is destroyed",
+                terminal.expect("Delete box \"ubuntu\"", "Local disk data is destroyed; data on retained PVCs is kept.",
                                 "active sessions in the box are killed",
                                 "a fresh box is created on your next login:",
                                 "ssh ubuntu@<host>")

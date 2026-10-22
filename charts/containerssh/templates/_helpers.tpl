@@ -2,6 +2,14 @@
 Helpers for the ContainerSSH chart.
 */}}
 
+{{- define "containerssh.managedStorage" -}}
+{{- $enabled := false -}}
+{{- range .Values.kubernetes.podTemplates -}}
+{{- if .volumeClaimTemplates -}}{{- $enabled = true -}}{{- end -}}
+{{- end -}}
+{{- if $enabled -}}true{{- end -}}
+{{- end -}}
+
 {{- define "containerssh.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
 {{- end }}

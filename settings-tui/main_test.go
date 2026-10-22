@@ -608,22 +608,29 @@ func TestManagementListSelectDeleteAndRecreate(t *testing.T) {
 	// selected box, which is visible proof of the selection.
 	s.input(t, "d")
 	s.expect(t, "Delete box \"ubuntu\" ("+ubuntu+")?")
+	mark := s.mark()
 	s.input(t, "n")
 	s.input(t, "k")
 	s.input(t, "d")
-	s.expect(t, "data-engine is not created")
+	// Observe the intermediate list frame before reopening an identical popup;
+	// otherwise the differential renderer can legitimately emit no new bytes.
+	s.expectFrom(t, mark, "data-engine is not created")
 	s.input(t, "\x1b[B") // down arrow: back to ubuntu
+	// Wait for this popup, not an earlier identical title in PTY history.
+	mark = s.mark()
 	s.input(t, "d")
-	s.expect(t, "Delete box \"ubuntu\" ("+ubuntu+")?")
+	s.expectFrom(t, mark, "Delete box \"ubuntu\" ("+ubuntu+")?")
 	s.input(t, "\x1b") // Esc cancels the dialog
-	mark := s.mark()
+	mark = s.mark()
 	time.Sleep(200 * time.Millisecond)
 	if strings.Contains(s.textFrom(mark), "Delete box") {
 		t.Fatal("Esc left the confirmation dialog open")
 	}
 
 	// r forces a refresh: new gets must arrive.
+	api.mu.Lock()
 	before := api.gets
+	api.mu.Unlock()
 	s.input(t, "r")
 	waitFor(t, time.Second, func() bool {
 		api.mu.Lock()
@@ -632,9 +639,10 @@ func TestManagementListSelectDeleteAndRecreate(t *testing.T) {
 	})
 
 	// Cancel keeps the box; the popup lists all three consequences.
+	mark = s.mark()
 	s.input(t, "d")
-	s.expect(t, "Delete box \"ubuntu\" ("+ubuntu+")?",
-		"all data on the box's local disk is destroyed",
+	s.expectFrom(t, mark, "Delete box \"ubuntu\" ("+ubuntu+")?",
+		"Local disk data is destroyed; data on retained PVCs is kept.",
 		"active sessions in the box are killed",
 		"a fresh box is created on your next login:",
 		"ssh ubuntu@<host>")
@@ -652,8 +660,9 @@ func TestManagementListSelectDeleteAndRecreate(t *testing.T) {
 
 	// Confirm deletes through the API and shows Terminating, then the
 	// not-created row once the pod is gone.
+	mark = s.mark()
 	s.input(t, "d")
-	s.expect(t, "Delete box")
+	s.expectFrom(t, mark, "Delete box")
 	s.input(t, "y")
 	s.expect(t, "Terminating")
 	api.mu.Lock()

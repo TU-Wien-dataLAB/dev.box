@@ -87,7 +87,7 @@ func (h *configHandler) persistentTemplates() ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read authorization template %q: %w", template, err)
 		}
-		if h.boxes.enabled() && !templateSelectsNonPersistent(cfg) {
+		if h.boxes.enabled() && !templateSelectsNonPersistent(cfg.AppConfig) {
 			templates = append(templates, template)
 		}
 	}

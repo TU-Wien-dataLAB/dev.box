@@ -70,8 +70,11 @@ startup failures, shell absence, and agent console/idle-signal compatibility.
 - UI: `↑/↓` or `j`/`k` select (the detail pane follows); `r` refreshes now (plus an automatic poll
   every ~3 s); `d` opens a centered delete-confirmation popup for the selected existing box; `y`
   confirms; `n`/`Esc`/`q` cancel. `q` or Ctrl+C quits from the list view; inside the popup they
-  only cancel. The popup states all three consequences: local data destroyed (no PVC exists),
-  active sessions killed, and a fresh box on the next login to that template. A deleted box shows
+  only cancel. Every confirmation layout uses the same storage consequence:
+  **"Local disk data is destroyed; data on retained PVCs is kept."** It also states active sessions
+  are killed and a fresh box is created on the next login to that template (smallest layouts retain
+  the prompt/keys and storage wording, subject to normal width clipping). There is no PVC detection,
+  storage row, storage action or PVC permission; Settings deletes only the pod. A deleted box shows
   **Terminating** until it is gone, then settles into the same dimmed **not created** row as
   never-instantiated templates; the detail pane of a not-created box names the exact
   `ssh <template>@<host>` command that creates it.

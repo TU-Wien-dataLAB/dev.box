@@ -267,7 +267,7 @@ func TestTerminatingTransitionAfterDelete(t *testing.T) {
 		t.Fatalf("confirmation missing:\n%s", view(m))
 	}
 	for _, consequence := range []string{
-		"all data on the box's local disk is destroyed",
+		"Local disk data is destroyed; data on retained PVCs is kept.",
 		"active sessions in the box are killed",
 		"a fresh box is created on your next login:",
 		"ssh ubuntu@" + sshHostPlaceholder,
@@ -291,6 +291,22 @@ func TestTerminatingTransitionAfterDelete(t *testing.T) {
 	m = driveRefresh(t, m)
 	if !strings.Contains(view(m), "ssh ubuntu@"+sshHostPlaceholder+" creates this box") {
 		t.Fatalf("post-delete detail lost the recreate hint:\n%s", view(m))
+	}
+}
+
+func TestDeleteWarningAcrossConfirmationLayouts(t *testing.T) {
+	name := boxPodName("alice", "ubuntu")
+	client := &fakeClient{pods: map[string]*podInfo{name: runningPod(name)}}
+	m := driveRefresh(t, newModel("alice", []string{"ubuntu"}, 0, client, 120, 24))
+	m = press(t, m, key('d'))
+	const warning = "Local disk data is destroyed; data on retained PVCs is kept."
+	for _, width := range []int{80, 200} {
+		for _, height := range []int{24, 10, 6, 5, 4, 3, 2} {
+			m.width, m.height = width, height
+			if text := view(m); !strings.Contains(text, warning) {
+				t.Errorf("%dx%d lacks warning:\n%s", width, height, text)
+			}
+		}
 	}
 }
 

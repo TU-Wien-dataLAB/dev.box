@@ -35,7 +35,7 @@ var errNoMatchingTemplate = errors.New("no pod template matches SSH username")
 // cachedEntry remembers a parsed template together with the file stat it was
 // parsed from, so unchanged files are not re-read on every SSH connection.
 type cachedEntry struct {
-	cfg     config.AppConfig
+	cfg     podTemplate
 	size    int64
 	modTime time.Time
 }
@@ -84,8 +84,15 @@ func (h *configHandler) OnConfig(req config.Request) (config.AppConfig, error) {
 	// Persistent-mode injection is skipped for a template that explicitly
 	// selects a non-persistent mode (a fixed per-user name would break
 	// per-connection/session pod creation); the template's own mode applies.
-	if h.boxes.enabled() && !templateSelectsNonPersistent(cfg) {
-		cfg, err = h.applyPersistent(req, cfg, templateName)
+	if h.boxes.enabled() && !templateSelectsNonPersistent(cfg.AppConfig) {
+		cfg.AppConfig, err = h.applyPersistent(req, cfg.AppConfig, templateName)
+		if err != nil {
+			return config.AppConfig{}, err
+		}
+	}
+
+	if len(cfg.VolumeClaimTemplates) > 0 {
+		cfg.AppConfig, err = h.applyStorage(req, cfg, templateName)
 		if err != nil {
 			return config.AppConfig{}, err
 		}
@@ -98,19 +105,19 @@ func (h *configHandler) OnConfig(req config.Request) (config.AppConfig, error) {
 			"Serving pod template %s for user %s",
 			filepath.Base(source), req.Username,
 		))
-	return cfg, nil
+	return cfg.AppConfig, nil
 }
 
 // load returns the named template and its source file, or an error when the
 // username is invalid, no matching file exists, or the file cannot be read/parsed.
-func (h *configHandler) load(username string) (config.AppConfig, string, error) {
+func (h *configHandler) load(username string) (podTemplate, string, error) {
 	if !validTemplateName(username) {
-		return config.AppConfig{}, "", fmt.Errorf("%w %q: invalid template name", errNoMatchingTemplate, username)
+		return podTemplate{}, "", fmt.Errorf("%w %q: invalid template name", errNoMatchingTemplate, username)
 	}
 	for _, name := range []string{username + ".yaml", username + ".json"} {
 		path, err := safeJoin(h.dir, name)
 		if err != nil {
-			return config.AppConfig{}, "", err
+			return podTemplate{}, "", err
 		}
 		info, err := os.Stat(path)
 		if os.IsNotExist(err) {
@@ -118,19 +125,19 @@ func (h *configHandler) load(username string) (config.AppConfig, string, error) 
 			continue
 		}
 		if err != nil {
-			return config.AppConfig{}, path, err
+			return podTemplate{}, path, err
 		}
 		cfg, err := h.readCached(path, info)
 		if err != nil {
-			return config.AppConfig{}, path, err
+			return podTemplate{}, path, err
 		}
 		return cfg, path, nil
 	}
-	return config.AppConfig{}, "", fmt.Errorf("%w %q", errNoMatchingTemplate, username)
+	return podTemplate{}, "", fmt.Errorf("%w %q", errNoMatchingTemplate, username)
 }
 
 // readCached parses and caches a template file, keyed on its size + mtime.
-func (h *configHandler) readCached(path string, info os.FileInfo) (config.AppConfig, error) {
+func (h *configHandler) readCached(path string, info os.FileInfo) (podTemplate, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -141,11 +148,14 @@ func (h *configHandler) readCached(path string, info os.FileInfo) (config.AppCon
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return config.AppConfig{}, err
+		return podTemplate{}, err
 	}
-	var cfg config.AppConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return config.AppConfig{}, fmt.Errorf("invalid template in %s: %w", path, err)
+	var cfg podTemplate
+	if err := yaml.Unmarshal(data, &cfg.AppConfig); err != nil {
+		return podTemplate{}, fmt.Errorf("invalid template in %s: %w", path, err)
+	}
+	if err := cfg.readClaims(data, h.boxes.enabled()); err != nil {
+		return podTemplate{}, fmt.Errorf("invalid template in %s: %w", path, err)
 	}
 	if h.cache == nil {
 		h.cache = map[string]cachedEntry{}

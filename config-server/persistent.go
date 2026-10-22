@@ -137,11 +137,12 @@ func (h *configHandler) applyPersistent(req config.Request, cfg config.AppConfig
 	// for mixed-mode templates because mergo cannot override true with false;
 	// request-level injection keeps persistent boxes on-demand in that case.
 	cfg.Kubernetes.Pod.CreateMissingPods = true
-	labels := make(map[string]string, len(cfg.Kubernetes.Pod.Metadata.Labels)+1)
+	labels := make(map[string]string, len(cfg.Kubernetes.Pod.Metadata.Labels)+2)
 	for key, value := range cfg.Kubernetes.Pod.Metadata.Labels {
 		labels[key] = value
 	}
 	labels[ownerLabelKey] = ownerLabelValue(owner)
+	labels[templateLabelKey] = ownerLabelValue(templateName)
 	cfg.Kubernetes.Pod.Metadata.Labels = labels
 
 	h.logger.WithLabel("username", message.LabelValue(req.Username)).
