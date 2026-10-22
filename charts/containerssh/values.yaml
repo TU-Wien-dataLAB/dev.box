@@ -10,7 +10,7 @@ image:
 settings:
   image:
     repository: ghcr.io/tu-wien-datalab/dev.box/settings-tui
-    tag: sha-4802c39db9b28f20c6309e0078066e309950f6ab@sha256:18efc8cb71a403c06de27dbad6b071ef3935681aa40d3e0dab2ab7bc03355fd4
+    tag: sha-b518b101a1c876f4cd730a281d90c57fb90612a9@sha256:6b791e3b6490d477df5a6cd27c359359e5d675bbd2793943311f29dac1513a50
 
 replicaCount: 1
 
@@ -319,13 +319,11 @@ configserver:
 # no escalate/bind is needed because it holds the pod permissions it delegates.
 configServer:
   enabled: false
-  # Must point at a built/pushed image — there is no public config-server image.
-  # Repo CI (/.github/workflows/config-server-image.yml) publishes it to
-  # ghcr.io/tu-wien-datalab/dev.box/config-server on push to main (tags: main,
-  # latest, sha-<x>). Default below targets that GHCR path.
+  # Digest-pinned managed-storage config server, published by repo CI.
+  # Keep immutable pins for rollouts; main/latest tags are build conveniences.
   image:
     repository: ghcr.io/tu-wien-datalab/dev.box/config-server
-    tag: main
+    tag: sha-b518b10@sha256:d00398ba27e5500dfa258655830d6317952a5d1c8624aec82f1f91d4ec9a99d9
     pullPolicy: IfNotPresent
   # syslog-style: 7 debug (per-request lookups) ... 4 warning, 3 error, 2 crit
   logLevel: 6

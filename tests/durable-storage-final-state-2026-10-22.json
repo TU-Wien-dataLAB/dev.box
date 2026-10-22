@@ -1,0 +1,30 @@
+{
+  "observed_at_utc": "2026-10-22T10:36:46.025369+00:00",
+  "context": "container-ssh",
+  "release": {
+    "name": "containerssh",
+    "namespace": "containerssh",
+    "revision": "49",
+    "status": "deployed",
+    "chart": "containerssh-0.5.0"
+  },
+  "session_namespace": "containerssh-sessions",
+  "remaining_pods": [
+    {
+      "name": "box-8bbfc143fa",
+      "uid": "33fb87e3-0678-4baa-ab6a-4b2acc0fedb1",
+      "phase": "Running",
+      "pvc_volume_count": 0
+    }
+  ],
+  "remaining_pvc_count": 0,
+  "remaining_resourcequota_count": 0,
+  "test_backing_pv_absent": "pvc-0ec0c765-d7fb-46a5-bfbb-acc859f6bfe3",
+  "template_preservation": {
+    "ordinary_templates_equal_to_pre_rollout": true,
+    "ordinary_template_names": [
+      "ubuntu"
+    ],
+    "ordinary_claim_template_count": 0
+  }
+}

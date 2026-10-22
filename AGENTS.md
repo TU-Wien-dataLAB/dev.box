@@ -187,7 +187,10 @@ ssh ubuntu@dev.box.example.com
   the staged acceptance plan.
 - **Persistent means pod lifecycle, not durable storage.** The pod survives SSH disconnects, but its
   writable layer does not survive pod deletion, eviction, node loss, or recreation. Any data that
-  must survive those events needs a PVC or another durable store. Persistent user pods require an
+  must survive those events needs a PVC or another durable store. Managed retained PVCs are
+  **per-template opt-in** through top-level `volumeClaimTemplates`; see the chart's storage
+  authoring contract. Nonempty `containers` overrides replace the base slice, not element-wise
+  merging: restate image, security settings and limits. Persistent user pods require an
   explicit lifecycle/cleanup policy; ContainerSSH intentionally skips pod removal in this mode.
   Pod-template changes also do not mutate an already-created persistent pod; recreate or migrate the
   pod explicitly when its image/spec must change.
@@ -368,7 +371,21 @@ Set `CONTAINERSSH_IMAGE` to validate the intended immutable rollout image.
 
 ## Deployment status
 
-**Current status (2026-10-21, latest):** revision **47**, chart **0.4.3**. Issue #7's settings TUI
+**Current status (2026-10-22):** revision **49**, chart **0.5.0**. Issue #12's retained
+per-box PVC support is deployed and live-tested using an isolated `smoke-storage` template:
+Kata/UID-1000 write → Settings pod deletion → new pod UID with the same PVC/data; ephemeral
+`/tmp` data lost as expected. Config-server and Settings are digest-pinned to builds from
+`b518b10`; gateway/auth pins are unchanged. Revision 48 carried the test template and conditional
+500Gi/50-claim quota; revision 49 removed it after UID-preconditioned fixture cleanup. Only
+`ubuntu` remains, with original UID `33fb87e3-0678-4baa-ab6a-4b2acc0fedb1`; **its template and
+storage are unchanged (no managed PVC)**. Storage is per-template opt-in, not an automatic
+migration. Live policy (82 PASS), lifecycle, scoped-owner authorization and prompt unknown-name
+rejection (0.38 s) passed. Before storage rollout, template migration or cleanup, read
+[the live evidence and limitations](tests/durable-storage-live-2026-10-22.md) and
+[the authoring contract](charts/containerssh/README.md#author-a-template-with-retained-storage).
+Two-real-owner acceptance (#10) remains separate.
+
+**Historical revision-47 baseline (2026-10-21):** revision **47**, chart **0.4.3**. Issue #7's settings TUI
 runs the validated **master–detail layout** (HTML prototypes on branch
 `prototype/settings-tui-c4`; captured answer on the issue) with **full-height equal panes** and a
 **detail pane that fills the remaining width**.
