@@ -118,3 +118,34 @@ Operational/test artifacts: the pre-upgrade port-forward briefly remained bound 
 pod and failed an SSH banner read; replacing the owned forward restored normal connections.
 An overlapping policy invocation was stopped and then rerun sequentially to completion after
 storage-fixture cleanup. Neither is reported as a successful acceptance run or a product fault.
+
+## Revision 50 addendum: ubuntu 5Gi template prepared, not mounted
+
+Owner request: **“update the pod template such that it gets a small 5Gi pvc to test”**.
+The agent explicitly warned that the existing pod cannot gain a mount without recreation and
+left the pod intact. This is template/provisioning preparation, **not mounted-volume acceptance**.
+
+- Exported current full user values securely, modified only the existing `ubuntu` item, and
+  reviewed the rendered manifest. Images, credentials, cap and all other user values are unchanged;
+  NetworkPolicy, Secret and Service objects compare equal. Helm lint passed.
+- Added one `volumeClaimTemplates` entry: `metadata.name: home`, RWO, `storageClassName: csi-cinder`,
+  explicit `requests.storage: 5Gi`. Pod fields declare `fsGroup: 1000`, the symbolic `home` volume
+  mounted at `/home`, and `HOME=/home`. The nonempty container override explicitly preserves the
+  running guest image, security settings and resource bounds (rather than relying on slice merge).
+- Applied the full reviewed values with `helm upgrade ... --atomic --wait --timeout 10m` in context
+  `container-ssh`: release revision **50**, chart **0.5.0**, succeeded. Conditional config-server
+  PVC get/create and the default 500Gi/50-claim ResourceQuota are now active for `ubuntu`.
+- A real enrolled-key `ssh ubuntu@localhost` login succeeded and created the claim through the
+  deployed config server; it reused the running pod, which has **no PVC volume in its old spec**.
+- PVC: `box-8bbfc143fa-home`, UID `740e4339-cd61-4ac1-956d-252802036fa7`, request **5Gi**, no owner
+  references. Phase **Pending**, as expected with WaitForFirstConsumer and no consuming pod yet.
+  Quota reports 5Gi/1 claim even before binding.
+- Pod UID before/after this update: `5f35a566-ed3f-4244-b88f-eb754daa229e`, unchanged by this update.
+  This differs from revision 49's recorded UID: the box had already been recreated before this
+  request; that intervening recreation is not attributed to this template update.
+
+**Activation remains pending:** obtain explicit approval to recreate `ubuntu` and address any
+current writable-layer data first. Deleting it destroys that local data; the new PVC does not
+retroactively copy files. After approved recreation, verify a Bound 5Gi claim, `/home` writability,
+HOME and retention through SSH. The earlier revision-49 final-state snapshot is historical,
+not the current PVC inventory. No test fixture/claim cleanup applies to this owner-requested PVC.

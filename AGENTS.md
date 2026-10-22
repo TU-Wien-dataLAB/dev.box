@@ -371,7 +371,18 @@ Set `CONTAINERSSH_IMAGE` to validate the intended immutable rollout image.
 
 ## Deployment status
 
-**Current status (2026-10-22):** revision **49**, chart **0.5.0**. Issue #12's retained
+**Current status (2026-10-22, latest):** revision **50**, chart **0.5.0**. At the owner's
+request, the live `ubuntu` template now declares a **5Gi** RWO `home` claim on `csi-cinder`,
+mounted at `/home` with `HOME=/home` and `fsGroup: 1000` for newly created pods. Real SSH login
+created retained PVC `box-8bbfc143fa-home` (UID `740e4339-cd61-4ac1-956d-252802036fa7`). It is
+**Pending / not mounted**: WaitForFirstConsumer cannot bind it while the existing pod still has
+its old spec. This update preserved pod UID `5f35a566-ed3f-4244-b88f-eb754daa229e` (the box had
+already been recreated between revisions 49 and 50). **Recreation/data-loss approval is still
+required before deleting that pod**; template changes do not mutate it. Images remain pinned as
+at revision 49. Read the [revision-50 addendum](tests/durable-storage-live-2026-10-22.md#revision-50-addendum-ubuntu-5gi-template-prepared-not-mounted)
+before attempting activation or cleanup.
+
+**Historical revision-49 baseline (2026-10-22):** revision **49**, chart **0.5.0**. Issue #12's retained
 per-box PVC support is deployed and live-tested using an isolated `smoke-storage` template:
 Kata/UID-1000 write → Settings pod deletion → new pod UID with the same PVC/data; ephemeral
 `/tmp` data lost as expected. Config-server and Settings are digest-pinned to builds from
