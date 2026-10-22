@@ -164,12 +164,9 @@ with no fallback to the SSH login, client env, original command or template data
 independent across concurrent owners. Settings skips persistent naming/cap listing and carries no
 `dev.box/owner` label; ordinary identity, cap, labels and reconnect behavior are unchanged.
 
-The shared base must remain restricted: only `containers`, `securityContext`, `restartPolicy`,
-`terminationGracePeriodSeconds` at pod-spec level. Base pod securityContext permits only
-`runAsNonRoot`, `runAsUser`, `runAsGroup`, `seccompProfile.type`; base metadata permits only
-labels/annotations without `dev.box/owner`. Empty/false webhook values cannot clear unsafe inherited fields. The chart enforces this unconditionally and
-injects Kata per ordinary named template, not into the shared base or settings. External base
-configs need the same audit. Heavy fields remain available in ordinary templates.
+The chart owns the [shared-base restrictions](../charts/containerssh/README.md#shared-base-restrictions).
+Empty/false webhook values cannot clear unsafe inherited fields, so external bases need the same
+audit. Keep heavy fields and Kata selection in ordinary templates, never in the shared base or Settings.
 
 **Stock v0.6 is insufficient for the full SSH policy.** Fork
 [PR #11](https://github.com/TU-Wien-dataLAB/ContainerSSH/pull/11) provides the Settings fixes.
@@ -215,13 +212,10 @@ get/delete before delegating them; create/get/list alone cannot implement reconc
 required). A compromised config server can affect namespace pods and these authorization objects;
 the owner credential is narrower than the server credential.
 
-**NetworkPolicy: settings reaches exactly the Kubernetes API.** The chart renders one scoped
-exception (`networkPolicy.settingsApiEgress`, see the [chart README](../charts/containerssh/README.md))
-allowing settings pods (`dev.box/application=settings`) to reach the Kubernetes API; ordinary pods
-keep deny-ingress/egress-internet-only. Operator-side impersonation proves API authorization
-independently of networking: mounted-token evidence and a live settings-pod API request are distinct
-seams, and both are approval-gated. Follow
-[the operations guide](../docs/operations.md).
+The chart owns [Settings API egress](../charts/containerssh/README.md#scoped-token-trust-boundary);
+ordinary pods do not receive that exception. Operator impersonation, mounted-token authentication
+and actual Settings-origin networking prove different boundaries. Follow
+[operations](../docs/operations.md) for separately approved live evidence.
 
 ## Build and test locally
 
@@ -279,7 +273,7 @@ renders ordinary templates into a ConfigMap (keys = `<name>.yaml`), mounts it at
 passes `settings.image` as `CONTAINERSSH_SETTINGS_IMAGE`, and auto-wires `configserver.url`.
 There is no settings template file. The server needs in-cluster credentials in every mode.
 
-The repo CI (`.github/workflows/config-server-image.yml`) builds this directory and publishes it
+The repo CI (`.github/workflows/server-images.yml`) builds this directory and publishes it
 to `ghcr.io/tu-wien-datalab/dev.box/config-server` on every push to `main`; the chart's
 `configServer.image` defaults to that image. For the cluster to pull it, either make the GHCR
 package public or add a GHCR `imagePullSecret` (set `imagePullSecrets` in the chart).
@@ -298,6 +292,18 @@ For production traffic, serve HTTPS and optionally require client certificates â
 `CONTAINERSSH_TLS_CERT`/`_KEY`/`_CLIENTCA` and mount cert files, then mirror them in the chart as
 `configserver.cacert` (+ `configserver.cert`/`configserver.key` for mTLS). Responses carry pod
 settings, so keep it TLS/mTLS rather than plain HTTP.
+
+## Source map
+
+- `main.go`: environment, Kubernetes client and server lifecycle.
+- `handler.go`: exact template lookup, parsing/cache and request orchestration.
+- `persistent.go`: stable identity, owner labels and live-box cap.
+- `storage.go`: claim declarations, identity verification and retained-claim creation.
+- `owner_access.go`: template walk and owner SA/Role/Binding reconciliation.
+- `settings.go`: code-owned Settings application and trusted environment.
+
+Tests live beside each responsibility; see [the test reference](../tests/README.md) for
+repository-wide checks and [architecture](../docs/architecture.md) for the complete request flow.
 
 ## Design notes
 

@@ -101,11 +101,9 @@ type httpBoxClient struct {
 // plumbing exactly like the owner env and is never set by the config server.
 func newBoxClient() (boxClient, error) {
 	if override := strings.TrimSpace(os.Getenv("DEV_BOX_KUBE_API_URL")); override != "" {
-		namespace, err := namespaceFrom(func() (string, error) {
-			return "", errNoOverrideNamespace
-		})
-		if err != nil {
-			return nil, err
+		namespace := strings.TrimSpace(os.Getenv("DEV_BOX_NAMESPACE"))
+		if namespace == "" {
+			return nil, errors.New("DEV_BOX_NAMESPACE is required with DEV_BOX_KUBE_API_URL")
 		}
 		return &httpBoxClient{
 			base:      strings.TrimSuffix(override, "/"),
@@ -126,16 +124,7 @@ func newBoxClient() (boxClient, error) {
 	if !pool.AppendCertsFromPEM(caPEM) {
 		return nil, errors.New("cluster CA is not valid PEM")
 	}
-	namespace, err := namespaceFrom(func() (string, error) {
-		data, err := os.ReadFile(namespaceFile)
-		if err != nil {
-			return "", fmt.Errorf("read pod namespace: %w", err)
-		}
-		if ns := strings.TrimSpace(string(data)); ns != "" {
-			return ns, nil
-		}
-		return "", errors.New("pod namespace file is empty")
-	})
+	namespace, err := namespaceFrom(namespaceFile)
 	if err != nil {
 		return nil, err
 	}
@@ -152,15 +141,20 @@ func newBoxClient() (boxClient, error) {
 	}, nil
 }
 
-var errNoOverrideNamespace = errors.New("DEV_BOX_NAMESPACE is required with DEV_BOX_KUBE_API_URL")
-
-// namespaceFrom resolves the target namespace: the trusted override first,
-// then the mounted namespace file.
-func namespaceFrom(file func() (string, error)) (string, error) {
+// namespaceFrom resolves the in-cluster target namespace: the trusted override
+// first, then the mounted namespace file.
+func namespaceFrom(file string) (string, error) {
 	if ns := strings.TrimSpace(os.Getenv("DEV_BOX_NAMESPACE")); ns != "" {
 		return ns, nil
 	}
-	return file()
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return "", fmt.Errorf("read pod namespace: %w", err)
+	}
+	if ns := strings.TrimSpace(string(data)); ns != "" {
+		return ns, nil
+	}
+	return "", errors.New("pod namespace file is empty")
 }
 
 // unavailableClient is used when no client could be built: every call fails

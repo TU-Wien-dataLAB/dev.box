@@ -11,7 +11,7 @@
 // The authentik side lives in authentik.go (API client) and auth_handler.go
 // (the handler). The server performs one exact authentik users query for the
 // public-key string supplied by ContainerSSH against the `sshPublicKey`
-// attribute. See spec §4.
+// attribute. See README.md for the public-key contract.
 //
 // [1] https://goauthentik.io
 package main

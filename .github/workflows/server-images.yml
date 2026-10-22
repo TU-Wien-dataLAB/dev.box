@@ -1,29 +1,20 @@
-name: publish config-server image
+name: publish server images
 
-# Builds dev.box/config-server and publishes it to GHCR so the cluster can pull
-# it. Change `configServer.image` in charts/containerssh/values.yaml to the
-# ghcr.io image below after the first run (see AGENTS.md).
-#
-# Package naming (ghcr, scoped to this repo):
-#   ghcr.io/<owner>/<repo>/config-server
-#
-# After the first successful run you must let the cluster pull it, one of:
-#   * make the package public, or
-#   * create an imagePullSecret for GHCR and set values.imagePullSecrets
-# (see AGENTS.md -> Deployment status).
-
+# Packages: ghcr.io/<owner>/<repo>/{auth-server,config-server}.
+# Make packages public or configure imagePullSecrets before cluster use.
 on:
   push:
     branches: ["main", "master"]
     tags: ["v*"]
   workflow_dispatch:
 
-env:
-  IMAGE_NAME: config-server
-
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        server: [auth-server, config-server]
     permissions:
       contents: read
       packages: write
@@ -45,7 +36,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}
+          images: ghcr.io/${{ github.repository }}/${{ matrix.server }}
           tags: |
             type=ref,event=branch
             type=ref,event=tag
@@ -55,7 +46,7 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: config-server
+          context: ${{ matrix.server }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

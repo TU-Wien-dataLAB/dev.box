@@ -174,33 +174,17 @@ claim-template name pass through unchanged and do not activate managed storage/q
 
 ### Retention and failure semantics
 
-- A symbolic `persistentVolumeClaim.claimName` matching a declaration becomes
-  `box-<10hex>-<claimName>`: one PVC per **authenticated owner, template, claim**. The box hash is
-  the existing SHA-256 prefix over trimmed owner + NUL + template. Claims carry owner/template/claim
-  identity metadata; owner/template labels support operator queries and cleanup without name parsing.
-- The config server enforces the live-box cap **before** creating claims. It creates missing claims
-  on demand and verifies identity metadata on reuse, including after `409 AlreadyExists`.
-  Foreign or terminating claims and real API errors deny the connection. Name equality alone is
-  insufficient. Cached pod specs are copied before per-owner reference rewrites.
-- Managed claims have **no pod owner references**. Settings still has exactly one action: delete
-  the pod. **Local disk data is destroyed; data on retained PVCs is kept.** Disconnect preserves
-  persistent pods; pod deletion/eviction/recreation loses writable-layer and ephemeral-volume data
-  (including `emptyDir`), but retained mounts survive. Only files written to those mounts are durable.
-- Quota is namespace-wide, not a per-owner fairness guarantee. Retained claims, including orphans,
-  count against it; current template count is not a lifetime PVC ceiling. Quota exhaustion fails
-  claim creation and denies the connection. Partial multi-claim failures can leave retained claims:
-  there is no rollback deletion; retries reuse verified claims.
-- Owner identity drift, template/claim renames, storage removal or template deletion can orphan
-  claims. Cleanup is explicit operator work by label, never automatic GC. Helm uninstall does not
-  delete these independently created claims; namespace deletion can destroy them.
-- Template edits do not reconcile existing PVC specs or update existing pods. Expansion is a manual
-  operator PVC patch, requiring a StorageClass with `allowVolumeExpansion: true`. Deliberately
-  recreate/migrate pods when applying pod-spec changes.
-- `kubectl delete pvc` is the intended operator data-destruction path; backing-volume destruction
-  follows the reclaim policy (recorded Cinder policy: `Delete`). Namespace deletion, storage failure
-  and users deleting files can also lose data. Backups/snapshots are out of scope; retention is not
-  a backup. CSI binding/provisioning still follows the selected StorageClass: with
-  `WaitForFirstConsumer`, provisioning waits for a consuming pod to schedule.
+The [config-server storage contract](../../config-server/README.md#managed-retained-claims-template-reference)
+is authoritative for claim identity, cap-before-create ordering, conflict handling and partial
+failure behavior. The chart only declares templates, permissions and quota; it does not reconcile claims.
+
+**Deleting a pod destroys local disk data but preserves retained PVCs.** Template edits update
+neither existing pods nor claim specs. Orphan claims count against namespace quota and require
+explicit operator cleanup; Helm uninstall does not collect them. PVC/namespace deletion can
+lose retained data: retention is not a backup. StorageClass binding and reclaim policies still apply;
+`WaitForFirstConsumer` delays provisioning until a consuming pod can schedule.
+Before recreation or cleanup, read [operations](../../docs/operations.md) and the
+[recorded storage hold](../../docs/deployment-status.md#current-baseline-and-storage-hold).
 
 ## Install
 
@@ -349,6 +333,20 @@ service port via `ingress.tcp.*` (see `values.yaml`).
 
 See `values.yaml` for the complete, annotated list. Highlights:
 
+### Authentication rendering contract
+
+For a chart-generated base, each explicit webhook URL takes precedence over bundled wiring.
+The chart fails rendering unless password or public-key authentication has an effective URL;
+authorization alone is insufficient. Only methods with usable URLs are emitted. An external
+`existingConfigMap` bypasses this validation because the chart does not inspect its contents;
+operators must audit that configuration independently.
+
+`tests/chart-auth-rendering.sh` covers invalid, external, bundled and mixed-override cases.
+[Consumer validation](../../tests/README.md#docker-image-checks-no-cluster) checks actual merge,
+backend/security validation and binary parsing; `--dump-config` alone does not prove policy.
+
+### Values
+
 | Parameter | Default | Description |
 | --- | --- | --- |
 | `image.repository`, `image.tag` | digest-pinned fork PR #10 (see `values.yaml`) | Settings fixes plus auth denial banners; not a live rollout |
@@ -470,13 +468,10 @@ connection-mode application. No `settings.yaml`/`.json` is read or rendered; a `
 `kubernetes.podTemplates` is rejected. Values expose only `settings.image.repository/tag`, not its
 security policy or pod spec. The existing static TUI/image and q-only terminal contract are unchanged.
 
-The server forces `/usr/local/bin/dev-box-settings` directly, permits PTY and application-shell
-startup only, denies exec/subsystem/env/signal/forwarding, and limits each transport to one session.
-The non-root container has a read-only root, no capabilities or privilege escalation, and bounded
-resources. It receives raw `DEV_BOX_AUTHENTICATED_OWNER` only from verified authentication metadata;
-blank identities deny. Display sanitization is not authorization. Settings uses no Kata RuntimeClass,
-persistent name or `dev.box/owner` cap label. Full disconnect cleans up its disposable pod; `q`
-alone need not close a multiplexed parent connection.
+The [config-server Settings contract](../../config-server/README.md#reserved-settings-application)
+owns application synthesis and SSH policy; the [TUI execution contract](../../settings-tui/README.md#execution-contract)
+owns its environment and terminal behavior. Settings uses no Kata RuntimeClass, persistent name
+or owner cap label. Its restrictive policy is code-owned, not customizable through Helm values.
 
 ### Shared-base restrictions
 
@@ -492,24 +487,11 @@ ConfigMaps against this same boundary; bypassing chart rendering does not make i
 
 ### Scoped-token trust boundary
 
-On every settings request the config server reconciles three objects in the session namespace:
-one ServiceAccount, Role, and RoleBinding, all named `dev-box-owner-` + first **48 hex characters**
-of SHA-256 over the trimmed verified owner. The Role grants only pod **get/delete** on exact
-persistent box names recomputed from the mounted ordinary template list. No settings or
-connection/session names, pod list/watch, exec/log, or foreign-owner grants are included. Zero
-persistent names means **zero rules**, never a rule with empty `resourceNames` (which grants all
-names). Removed/added templates reconcile on the next settings connection; this is not a controller.
-Reconciliation errors deny the connection rather than issue a credential with unverified grants.
+The config server creates owner-scoped accounts and exact-name pod get/delete grants, not Helm.
+See [per-owner authorization](../../config-server/README.md#per-owner-kubernetes-authorization)
+for naming, reconciliation, projected-token and zero-rule contracts. The chart must supply the
+server's own broader namespaced permissions so Kubernetes allows that delegation:
 
-The ServiceAccount sets `automountServiceAccountToken: false`; the synthesized settings **pod**
-explicitly overrides it to `true`. Kubelet delivers the scoped projected token and CA at
-`/var/run/secrets/kubernetes.io/serviceaccount`. The management TUI uses exactly this token for its
-whole Kubernetes surface: per-name pod **get/delete** on the deterministic names above, nothing
-wider. The trusted `DEV_BOX_BOX_TEMPLATES` env var carries the owner's current ordinary persistent
-template names (the same walk that computes the Role's `resourceNames`), so the UI's row list can
-never diverge from its authorization.
-
-The config server's own namespaced permissions expand from list-only to:
 
 | Resource | Verbs |
 | --- | --- |
@@ -577,7 +559,8 @@ helm install containerssh . \
   --set-file authServer.authentik.token=service-token
 ```
 
-See `auth-server/README.md` for all env knobs and the lookup flow.
+See the [auth-server README](../../auth-server/README.md) for enrollment, environment configuration
+and lookup behavior.
 
 The bundled auth server sends policy-denial `message` fields. The default gateway is pinned to
 fork PR #10, which delivers them as SSH banners. PR #10 is not yet merged into `deploy`;

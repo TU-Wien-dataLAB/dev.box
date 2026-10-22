@@ -18,7 +18,9 @@ network access. The Settings executable tests require a Unix PTY.
 | Check | Protects |
 | --- | --- |
 | Application `*_test.go` | Auth/config contracts, owner access, storage, TUI model and real-process behavior |
-| `chart-*-rendering.sh`, `chart-service-selector.sh`, `chart-template-authorization.sh` | Helm wiring, policy boundaries, persistent mode, RBAC, Kata, storage and Service isolation |
+| `chart-base-rendering.sh` | Unconditional shared-base restrictions, empty bases and ordinary-template overrides |
+| `chart-networkpolicy-rendering.sh` | Session isolation and scoped Settings API egress defaults, switches and overrides |
+| Other `chart-*-rendering.sh`, `chart-service-selector.sh`, `chart-template-authorization.sh` | Helm wiring, Settings, auth, persistent mode, RBAC, Kata, storage and Service isolation |
 | `config-merge/` | Actual ContainerSSH defaulting, merge and security/backend validation; also used by the Docker check below |
 
 ## Docker image checks (no cluster)

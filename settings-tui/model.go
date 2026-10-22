@@ -112,8 +112,7 @@ type refreshDoneMsg struct {
 
 // deleteDoneMsg reports the outcome of a confirmed delete.
 type deleteDoneMsg struct {
-	template string
-	err      error
+	err error
 }
 
 // settingsModel is the Bubble Tea model of the management UI. owner is the
@@ -121,7 +120,6 @@ type deleteDoneMsg struct {
 // like the config server does and is sanitized only at display time.
 type settingsModel struct {
 	owner      string
-	templates  []string
 	maxBoxes   int // trusted per-owner cap; 0 disables the cap element
 	client     boxClient
 	rows       []boxRow
@@ -138,15 +136,14 @@ type settingsModel struct {
 // newModel builds the initial model from trusted inputs.
 func newModel(owner string, templates []string, maxBoxes int, client boxClient, width, height int) settingsModel {
 	m := settingsModel{
-		owner:     owner,
-		templates: templates,
-		maxBoxes:  maxBoxes,
-		client:    client,
-		rows:      make([]boxRow, len(templates)),
-		conn:      connChecking,
-		width:     width,
-		height:    height,
-		nowFunc:   time.Now,
+		owner:    owner,
+		maxBoxes: maxBoxes,
+		client:   client,
+		rows:     make([]boxRow, len(templates)),
+		conn:     connChecking,
+		width:    width,
+		height:   height,
+		nowFunc:  time.Now,
 	}
 	for i, template := range templates {
 		m.rows[i] = boxRow{template: template, name: boxPodName(owner, template), state: rowChecking}
@@ -198,7 +195,7 @@ func (m settingsModel) delete(row boxRow) tea.Cmd {
 		if errors.Is(err, errNotFound) {
 			err = nil
 		}
-		return deleteDoneMsg{template: row.template, err: err}
+		return deleteDoneMsg{err: err}
 	}
 }
 
@@ -259,7 +256,7 @@ func (m *settingsModel) applyRefresh(results []rowResult) {
 		switch {
 		case result.err == nil:
 			ok++
-			row.apply(result.pod, m.nowFunc())
+			row.apply(result.pod)
 		case errors.Is(result.err, errNotFound):
 			ok++
 			row.state = rowNotCreated
@@ -298,7 +295,7 @@ func (m *settingsModel) applyRefresh(results []rowResult) {
 	m.selected = clamp(m.selected, len(m.rows))
 }
 
-func (r *boxRow) apply(pod *podInfo, now time.Time) {
+func (r *boxRow) apply(pod *podInfo) {
 	r.stale, r.reconnect = false, false
 	r.phase = pod.Status.Phase
 	switch {

@@ -1,46 +1,11 @@
 # Operate and accept the dev.box release
 
 Use this runbook for approved changes and acceptance, not as authorization to access the cluster.
-**This consolidation performed no real cluster access.** The baseline below is the last recorded
-state (2026-10-22), not a fresh observation. Test commands live in
+**Read [recorded deployment status](deployment-status.md) before any operational work**, especially
+its exact-UID Ubuntu storage hold and unresolved acceptance gates. Recorded state is not a fresh
+observation or permission to recreate a pod. Test commands live in
 [tests/README.md](../tests/README.md): `./tests/check.sh` is offline; Docker/image validation and
 manual live probes are separate. Component/chart READMEs define the implementation contracts.
-
-## Current baseline and storage hold
-
-- Context `container-ssh`; Helm release/management namespace `containerssh`; backend namespace
-  `containerssh-sessions`; revision **50**, chart **0.5.0**. ClusterIP + approved local forward,
-  ingress disabled; stable Secrets `containerssh-host-key` and `containerssh-authentik-token`.
-- Ordinary template: `ubuntu`; verified owner `matthias.matt`; cap **3**. Ordinary runtime
-  `kata-qemu-runtime-rs`; Settings uses default runtime and scoped owner credentials.
-- `ubuntu` now declares **5Gi**, RWO, `csi-cinder`, claim `home`, mount `/home`, `HOME=/home`,
-  `fsGroup: 1000` for **new pods only**. Namespace quota is 500Gi/50 claims; config-server PVC
-  rights are get/create, not list/delete. The Pending claim already accounts for 5Gi/1 claim.
-- **Retained PVC `box-8bbfc143fa-home`, UID `740e4339-cd61-4ac1-956d-252802036fa7`, is Pending
-  and NOT mounted.** WaitForFirstConsumer has no consuming pod: existing `box-8bbfc143fa`,
-  **UID `5f35a566-ed3f-4244-b88f-eb754daa229e`**, still has its old spec without a PVC mount.
-  Revision 50 preserved that UID. **Do not delete/recreate this pod without explicit
-  recreation/data-loss approval and a decision about its current writable-layer data.**
-  The PVC does not copy existing files retroactively. This owner-requested claim is not a
-  leftover fixture; no fixture cleanup approval applies to it.
-- Template changes do not update existing pods or PVC specs. Retained PVC deletion is a
-  separate deliberate operator decision; no pod/PVC deletes without approval. `csi-cinder`
-  was recorded as WaitForFirstConsumer, reclaim Delete, expansion allowed. Retention is not
-  backup protection against PVC/namespace deletion, storage failure or user file deletion.
-
-Recorded immutable release references (chart defaults do not override live values):
-
-| Component | Reference |
-| --- | --- |
-| Gateway | `ghcr.io/tu-wien-datalab/containerssh:pr-10@sha256:96519c315ae7810931df2c8b5a974750d3f8fb6007c0aad4fa9b2e6b68394a4d` |
-| Auth | `ghcr.io/tu-wien-datalab/dev.box/auth-server:sha-245b9e2@sha256:36e68dc2e1686378121a37aebff86ff4c28f42ffe127f9903bae2fe30c0e5f73` |
-| Config | `ghcr.io/tu-wien-datalab/dev.box/config-server:sha-b518b10@sha256:d00398ba27e5500dfa258655830d6317952a5d1c8624aec82f1f91d4ec9a99d9` |
-| Settings | `ghcr.io/tu-wien-datalab/dev.box/settings-tui:sha-b518b101a1c876f4cd730a281d90c57fb90612a9@sha256:6b791e3b6490d477df5a6cd27c359359e5d675bbd2793943311f29dac1513a50` |
-
-The ordinary guest reference was `containerssh/containerssh-guest-image`, not digest-pinned;
-immutable gateway/webhook/Settings provenance does not establish immutable guest provenance.
-Gateway replacements must include the fork's Settings/lifecycle fixes and auth `message` support;
-stock v0.6 and unpatched deploy reject the message field. Gateway source work follows AGENTS.md.
 
 ## Prepare a safe rollout or acceptance run
 
@@ -83,7 +48,7 @@ Approval and successful historical checks do not transfer to a new run.
 | SSH policy | Run `ssh-settings-policy.py` with ordinary control, observed Settings selector `dev.box/application=settings`, explicit context/namespace, trusted host key and known owner. Require explicit failure replies for exec/SCP/subsystems/env spoof/signal/X11/agent/reverse forwarding and repeated starts; direct TCP/Unix forwarding codes 1 or 3, not destination-failure code 2; second session code 4 while active **and after q on the same healthy transport**. PTY/shell/resize succeed; non-PTY gives explanation/nonzero exit. Timeout, EOF, closed transport or fire-and-forget return is not denial evidence. Pin Paramiko 3.5.1 unless its private reply-observation seam is reviewed. |
 | Lifecycle | Run `ssh-settings-lifecycle.py`: q ends application but parent/master and pod can remain; full disconnect removes that exact test UID within bounds. Kill only the probe's local client; test real OpenSSH master second-session refusal with new-connection fallback disabled. Fresh login gets a fresh Settings UID, same three owner objects. Optional resize/exit stress requires separate selection and gateway restart-count checks. |
 | Management delete/recreate | Only with a separately approved disposable ordinary test box: verify exact dialog target before y; cancel does nothing. Confirmation names local-data loss/retained-PVC preservation, active-session termination and next-login recreation. Observe Terminating → not-created → SSH recreation with same name/new UID, other boxes unchanged. Never use the pending real ubuntu box for this gate without its specific approval. |
-| Network | Verify Settings-only API exception matches actual apiserver topology (recorded kube-system kube-apiserver pods); Calico post-NAT requires 443/6443. Prove actual Settings-origin API requests. Separately test ordinary DNS/public egress and blocked ingress/private/cluster destinations; inability to reach one destination is not blanket isolation proof. |
+| Network | Verify Settings-only API exception matches actual apiserver topology (see recorded topology in deployment status); Calico post-NAT requires 443/6443. Prove actual Settings-origin API requests. Separately test ordinary DNS/public egress and blocked ingress/private/cluster destinations; inability to reach one destination is not blanket isolation proof. |
 
 Drain PTY output continuously; an undrained driver can stall q/session close. Use a terminal
 emulator such as `pyte` for Bubble Tea ECH/CUF differential output, not raw-line ANSI stripping;
@@ -103,16 +68,15 @@ BatchMode also suppresses local encrypted-key prompts.
    get/delete only; deny foreign/settings/nonpersistent names, cross-namespace, list/watch,
    exec/log, mutations, Secrets/SA/RBAC/token issuance and PVC access. Use authorization reviews,
    not destructive DELETEs, on real data. Zero eligible templates must yield **zero rules**.
-3. Inventory ambient group/ClusterRoleBinding grants. Existing
-   `calico-tiered-policy-passthrough` grants policy verbs in `projectcalico.org` through inherited
-   groups; downstream Calico authorization was not tested. Core pod negatives do not prove
-   blanket least privilege or end-to-end network-policy isolation. Review this before enrollment.
+3. Inventory ambient group/ClusterRoleBinding grants, including the unresolved inherited Calico
+   authority in [deployment status](deployment-status.md#recorded-authorization-and-network-evidence).
+   Core pod negatives do not prove blanket least privilege or end-to-end network-policy isolation.
+   Review this before enrollment.
 4. Report mount presence, impersonated authorization, actual mounted-token authentication and
-   Settings-origin networking separately. Real management GET/DELETE through the TUI has exercised
-   the projected bearer and scoped API route. This supersedes the old static POC's API-egress block,
-   but is not an independent TokenReview/audience/expiry validation or two-owner negative test.
-   If such a probe is approved, use the actual mounted bearer in memory with CA verification;
-   never substitute `kubectl create token` or expose bearer bytes in args/logs/files.
+   Settings-origin networking separately. A successful management request is not independent
+   TokenReview/audience/expiry validation or a two-owner negative test. If such a probe is approved,
+   use the actual mounted bearer in memory with CA verification; never substitute
+   `kubectl create token` or expose bearer bytes in args/logs/files.
 
 ### Exercise cap and fail-closed boundaries only in isolation
 
@@ -141,7 +105,7 @@ production identities or disrupt production authentik to manufacture a boundary.
 
 ## Activate ubuntu storage only after specific approval
 
-1. Reobserve exact pod/PVC UIDs against the storage hold above. Agree backup/migration and
+1. Reobserve exact pod/PVC UIDs against the [recorded storage hold](deployment-status.md#current-baseline-and-storage-hold). Agree backup/migration and
    writable-layer data-loss disposition, downtime and explicit recreation approval first.
 2. Recheck reviewed template's complete container/security/limits, /home mount, HOME, fsGroup,
    storage class, identity annotations, quota and readiness. A container slice override replaces
@@ -170,21 +134,7 @@ objects/retained claims. PVC/PV disappearance is not independent Cinder-volume d
 Finish with ordinary positive control/original UID, readiness/restart/image inventory and redacted
 results; retain sensitive rollback exports locally, not as repository evidence.
 
-Unresolved conditions to carry forward (historical tests are **not current acceptance**):
-
-- **#10: two distinct real enrolled owners** concurrently rendering/reconnecting, real foreign
-  get/delete negatives and retained-claim isolation remain pending; this gates pre-alpha enrollment.
-  Synthetic owner metadata and fabricated foreign names do not complete it.
-- **Ubuntu mounted-volume activation/migration remains pending** under the exact UID hold above.
-  Managed SSH → Settings delete → reconnect retention passed on a disposable template previously;
-  that is not ubuntu acceptance or permission to discard its local data.
-- Live ambiguous-key fixtures, instrumented absence of arbitrary subprocess/file side effects,
-  downstream inherited Calico authority and independent mounted-bearer audience/expiry review
-  remain unproven; group denial is untested while not configured.
-- Foreign/terminating-claim collisions, partial multi-claim failure and concurrent owners were
-  covered offline, not by live production scenarios. Kubernetes quota admission was tested via
-  server-side dry-run, but actual config-webhook denial at exhausted quota was not forced live.
-- Startup/crash/missing-owner full-SSH fault gates have only retired-fixture historical evidence;
-  optional resize/exit stress was not selected for the latest storage regression. Explicitly
-  mark these NOT RUN until rerun with approved current tooling.
-- **#13 metrics/top** remains follow-up; requests/limits in the UI are not measured usage.
+Carry forward every [unresolved gate](deployment-status.md#unresolved-gates) with its evidence
+status. Update the dated deployment record after an approved run; historical tests are **not
+current acceptance**. Never silently drop a storage hold or treat a disposable-fixture result as
+acceptance for an owner's real box.

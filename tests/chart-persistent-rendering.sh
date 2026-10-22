@@ -18,22 +18,14 @@ release="persistent-test"
 namespace="containerssh"
 persistent_required_message="persistent kubernetes mode needs a config server to inject stable per-user pod names: enable configServer or set configserver.url (or use kubernetes.mode=connection)"
 
-render_config() {
-  helm template "$release" "$chart" --namespace "$namespace" \
-    --show-only templates/configmap.yaml "$@" |
-    ruby -ryaml -e '
-      document = YAML.load_stream(STDIN.read).find { |item| item.is_a?(Hash) && item["kind"] == "ConfigMap" }
-      abort "rendered ContainerSSH ConfigMap not found" unless document
-      print document.fetch("data").fetch("config.yaml")
-    '
-}
+source "$repo_root/tests/lib/render-config.sh"
 
 render_all() {
   helm template "$release" "$chart" --namespace "$namespace" "$@"
 }
 
 # --- default bundled mode: persistent, request-scoped creation, no generateName ---
-config="$(render_config --set authServer.enabled=true \
+config="$(render_config "$chart" "$release" "$namespace" --set authServer.enabled=true \
   --set authServer.authentik.url=https://authentik.example.test \
   --set authServer.authentik.tokenSecret=authentik-read-token \
   --set configServer.enabled=true)"
@@ -49,7 +41,7 @@ printf '%s' "$config" | ruby -ryaml -e '
 printf 'OK   default mode = persistent, request-scoped creation, no generateName\n'
 
 # --- mixed mode omits base createMissingPods so connection templates work ---
-config="$(render_config --set authServer.enabled=true \
+config="$(render_config "$chart" "$release" "$namespace" --set authServer.enabled=true \
   --set authServer.authentik.url=https://authentik.example.test \
   --set authServer.authentik.tokenSecret=authentik-read-token \
   --set configServer.enabled=true \
@@ -64,7 +56,7 @@ printf '%s' "$config" | ruby -ryaml -e '
 printf 'OK   mixed-mode templates use request-scoped createMissingPods\n'
 
 # Even an all-persistent ordinary list still has the code-owned settings peer.
-config="$(render_config --set auth.publicKey.webhook.url=https://auth.example.test \
+config="$(render_config "$chart" "$release" "$namespace" --set auth.publicKey.webhook.url=https://auth.example.test \
   --set configServer.enabled=true \
   --set 'kubernetes.podTemplates[0].name=ubuntu' \
   --set 'kubernetes.podTemplates[0].mode=persistent')"
@@ -75,7 +67,7 @@ printf '%s' "$config" | ruby -ryaml -e '
 printf 'OK   all-persistent ordinary templates still omit base createMissingPods\n'
 
 # --- external config servers may synthesize settings too -------------------
-config="$(render_config --set auth.publicKey.webhook.url=https://auth.example.test \
+config="$(render_config "$chart" "$release" "$namespace" --set auth.publicKey.webhook.url=https://auth.example.test \
   --set configserver.url=https://config.example.test)"
 printf '%s' "$config" | ruby -ryaml -e '
   pod = YAML.load(STDIN.read).dig("kubernetes", "pod")
@@ -84,7 +76,7 @@ printf '%s' "$config" | ruby -ryaml -e '
 printf 'OK   external config server also uses request-scoped createMissingPods\n'
 
 # --- connection mode keeps generateName and no createMissingPods ------------
-config="$(render_config --set kubernetes.mode=connection \
+config="$(render_config "$chart" "$release" "$namespace" --set kubernetes.mode=connection \
   --set authServer.enabled=true --set authServer.authentik.url=https://authentik.example.test \
   --set authServer.authentik.tokenSecret=authentik-read-token)"
 printf '%s' "$config" | ruby -ryaml -e '

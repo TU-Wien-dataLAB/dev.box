@@ -22,22 +22,14 @@ expect_render_failure() {
   printf 'OK   %s\n' "$name"
 }
 
-render_config() {
-  helm template "$release" "$chart" --namespace "$namespace" \
-    --show-only templates/configmap.yaml "$@" |
-    ruby -ryaml -e '
-      document = YAML.load_stream(STDIN.read).find { |item| item.is_a?(Hash) && item["kind"] == "ConfigMap" }
-      abort "rendered ContainerSSH ConfigMap not found" unless document
-      print document.fetch("data").fetch("config.yaml")
-    '
-}
+source "$repo_root/tests/lib/render-config.sh"
 
 assert_config() {
   local name="$1"
   local scenario="$2"
   shift 2
   local config
-  config="$(render_config "$@")"
+  config="$(render_config "$chart" "$release" "$namespace" "$@")"
   printf '%s' "$config" | ruby -ryaml -e '
     config = YAML.load(STDIN.read)
     auth = config.fetch("auth")

@@ -34,9 +34,13 @@ the exact match unchanged.
 
 Authentication behavior:
 
-- exactly one matching active user: authenticate as that authentik user;
+- exactly one matching active user (both reported count and decoded result length must be one):
+  authenticate as that authentik user;
 - zero or multiple users: deny cleanly;
 - authentik/network failure: return HTTP 500 so ContainerSSH fails closed.
+
+Scalar attributes and multi-key lists do not match the single-element-list query. Supporting
+multiple keys would require a different exact-searchable data model, not a fallback scan.
 
 The requested SSH username is intentionally not compared with the authentik username: in dev.box it
 selects the pod template. Successful metadata still records the authentik user as the authenticated
@@ -108,7 +112,7 @@ CONTAINERSSH_LISTEN=127.0.0.1:8080 \
 ./auth-server
 ```
 
-The repository workflow `.github/workflows/auth-server-image.yml` publishes
+The repository workflow `.github/workflows/server-images.yml` publishes
 `ghcr.io/tu-wien-datalab/dev.box/auth-server` on pushes to the default branch.
 
 ## Deploy with the Helm chart
@@ -128,11 +132,23 @@ Changes to template names update the auth-server Deployment and trigger a rollou
 config server does not auto-enable the template gate; standalone deployments must supply the list.
 An overridden external authorization webhook must implement its own template check.
 
+## Source map
+
+- `main.go`: environment and server lifecycle.
+- `authentik.go`: bounded, read-only authentik API requests.
+- `auth_handler.go`: authentication and authorization decisions.
+- `webhook.go`: HTTP wire adapter and denial-message serialization.
+
+Tests live beside the implementation. See [architecture](../docs/architecture.md) for the
+complete request flow and [the test reference](../tests/README.md) for repository-wide checks.
+
 ## Security properties
 
 - The server is read-only against authentik.
 - Authentication fails closed on API and network failures.
 - Unknown, duplicate, and inactive-user keys are denied.
-- Full public keys are not written to decision or error logs.
+- Requests use a bounded timeout and the system CA trust store by default.
+- Full public keys and complete query URLs are not written to decision or error logs;
+  decision logs may include requested username, owner and duration.
 - The authenticated ContainerSSH identity is the authentik owner; the requested SSH username remains
   free to select a pod template.

@@ -375,6 +375,34 @@ func TestDeleteRequiresLiveConnectionAndExistingBox(t *testing.T) {
 	}
 }
 
+func TestDeleteConfirmationRejectsStateThatBecameStale(t *testing.T) {
+	for _, failure := range []error{errors.New("connection refused"), errForbidden} {
+		for _, allFailed := range []bool{false, true} {
+			name := boxPodName("alice", "ubuntu")
+			other := boxPodName("alice", "data-engine")
+			client := &fakeClient{pods: map[string]*podInfo{name: runningPod(name)}}
+			m := driveRefresh(t, newModel("alice", []string{"ubuntu", "data-engine"}, 0, client, 120, 24))
+			m = press(t, m, key('d'))
+			if m.dialog != dialogConfirmDelete {
+				t.Fatal("confirmation did not open while Live")
+			}
+			client.failures = map[string]error{name: failure}
+			if allFailed {
+				client.failures[other] = failure
+			}
+			m = driveRefresh(t, m)
+			next, cmd := m.Update(key('y'))
+			m = next.(settingsModel)
+			if cmd != nil || len(client.deleted) != 0 || m.dialog != dialogNone {
+				t.Fatalf("stale confirmation issued delete: failure %v, all failed %v", failure, allFailed)
+			}
+			if !strings.Contains(m.message, "delete cancelled: the connection is "+m.conn.String()) {
+				t.Fatalf("stale cancellation not explained: %q", m.message)
+			}
+		}
+	}
+}
+
 func TestEmptyTemplateListRendersEmptyState(t *testing.T) {
 	m := newModel("alice", nil, 0, &fakeClient{}, 120, 24)
 	m = driveRefresh(t, m) // zero rows: still Live
